@@ -1,0 +1,7 @@
+CREATE DATABASE IF NOT EXISTS auth_service_dev;
+CREATE DATABASE IF NOT EXISTS booking_service_dev;
+CREATE DATABASE IF NOT EXISTS flights_service_dev;
+CREATE DATABASE IF NOT EXISTS reminder_service_dev;
+CREATE USER IF NOT EXISTS 'airline_user'@'%' IDENTIFIED BY 'airline_pass';
+GRANT ALL PRIVILEGES ON *.* TO 'airline_user'@'%' WITH GRANT OPTION;
+FLUSH PRIVILEGES;

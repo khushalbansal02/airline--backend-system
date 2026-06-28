@@ -76,40 +76,138 @@ A microservices-based backend system for an airline booking platform, built with
    ```
 
 3. **Set up environment variables**
-   Create `.env` files in each service directory with the required environment variables. Refer to the `.env.example` files in each service for reference.
+   `.env` files have been created in each service directory with default values:
+   - `AuthService/.env` - Port: 3001, JWT_KEY configured
+   - `BookingService/.env` - Port: 3002, Flight service path and RabbitMQ configured
+   - `FlightsAndSearchService/.env` - Port: 3003, DB sync enabled
+   - `ReminderService/.env` - Port: 3004, Email and RabbitMQ configured
+   
+   Update these files with your actual credentials if needed.
 
-4. **Database Setup**
-   - Create a MySQL database
-   - Update the database credentials in the respective `.env` files
-   - Run migrations:
-     ```bash
-     # From each service directory
-     npx sequelize db:migrate
-     ```
+4. **Database Configuration**
+   Database config files (`src/config/config.json`) have been created for each service with default credentials:
+   - Username: `airline_user`
+   - Password: `airline_pass`
+   - Databases: `auth_service_dev`, `booking_service_dev`, `flights_service_dev`, `reminder_service_dev`
+
+5. **MySQL Database Setup**
+   Start MySQL and create the databases and user:
+   ```bash
+   sudo mysql
+   ```
+   Then run the following SQL commands:
+   ```sql
+   CREATE DATABASE auth_service_dev;
+   CREATE DATABASE booking_service_dev;
+   CREATE DATABASE flights_service_dev;
+   CREATE DATABASE reminder_service_dev;
+   CREATE USER 'airline_user'@'localhost' IDENTIFIED BY 'airline_pass';
+   GRANT ALL PRIVILEGES ON *.* TO 'airline_user'@'localhost';
+   FLUSH PRIVILEGES;
+   EXIT;
+   ```
+
+6. **Run Migrations**
+   Create tables in each service database by running migrations:
+   ```bash
+   # Auth Service
+   cd AuthService
+   npx sequelize db:migrate --config src/config/config.json --models-path src/models --migrations-path src/migrations
+   
+   # Booking Service
+   cd ../BookingService
+   npx sequelize db:migrate --config src/config/config.json --models-path src/models --migrations-path src/migrations
+   
+   # Flights & Search Service
+   cd ../FlightsAndSearchService
+   npx sequelize db:migrate --config src/config/config.json --models-path src/models --migrations-path src/migrations
+   
+   # Reminder Service
+   cd ../ReminderService
+   npx sequelize db:migrate --config src/config/config.json --models-path src/models --migrations-path src/migrations
+   ```
+
+7. **Seed Dummy Data**
+   Load seeded test data for each service:
+   ```bash
+   cd AuthService
+   npx sequelize db:seed:all --config src/config/config.json --models-path src/models --seeders-path src/seeders
+   
+   cd ../BookingService
+   npx sequelize db:seed:all --config src/config/config.json --models-path src/models --seeders-path src/seeders
+   
+   cd ../FlightsAndSearchService
+   npx sequelize db:seed:all --config src/config/config.json --models-path src/models --seeders-path src/seeders
+   
+   cd ../ReminderService
+   npx sequelize db:seed:all --config src/config/config.json --models-path src/models --seeders-path src/seeders
+   ```
 
 ### Running the Application
 
 1. **Start each service in separate terminals**
    ```bash
-   # Terminal 1 - API Gateway
-   cd API_Gateway
+   # Terminal 1 - Auth Service
+   cd AuthService
    npm start
-
-   # Terminal 2 - Auth Service
-   cd ../AuthService
+   
+   # Terminal 2 - Flights & Search Service
+   cd ../FlightsAndSearchService
    npm start
-
+   
    # Terminal 3 - Booking Service
    cd ../BookingService
    npm start
-
-   # Terminal 4 - Flights & Search Service
-   cd ../FlightsAndSearchService
+   
+   # Terminal 4 - Reminder Service
+   cd ../ReminderService
+   npm start
+   
+   # Terminal 5 - API Gateway
+   cd ../API_Gateway
    npm start
    ```
 
-2. **Access the API**
-   The API Gateway will be available at `http://localhost:3000`
+2. **Service Ports**
+   - Auth Service: `http://localhost:3001`
+   - Booking Service: `http://localhost:3002`
+   - Flights & Search Service: `http://localhost:3003`
+   - Reminder Service: `http://localhost:3004`
+   - API Gateway: `http://localhost:3006`
+
+3. **Access the API**
+   Use the API Gateway at `http://localhost:3006` for all requests. The gateway will proxy and authenticate requests to the appropriate microservice.
+
+## ⚙️ Service Configuration
+
+### Environment Files
+All services have been pre-configured with `.env` files in their respective directories. Key configurations:
+
+- **AuthService/.env**: JWT secret, port, and database sync settings
+- **BookingService/.env**: Flight service path, message broker URL, and RabbitMQ exchange/binding keys
+- **FlightsAndSearchService/.env**: Database sync enabled, port configuration
+- **ReminderService/.env**: Email credentials, message broker configuration, port settings
+
+### Database Configuration
+Each service has `src/config/config.json` configured to use:
+- Host: `127.0.0.1`
+- Dialect: `mysql`
+- User: `airline_user`
+- Password: `airline_pass`
+
+**Note**: Keep `src/config/config.json` files out of version control if they contain real credentials (already in `.gitignore`).
+
+### Message Broker (RabbitMQ)
+The system uses RabbitMQ for async communication between services:
+- **BookingService** publishes booking events to the message broker
+- **ReminderService** subscribes to booking events and sends email notifications
+
+Ensure RabbitMQ is running on `localhost:5672` (the default), or update `MESSAGE_BROKER_URL` in the `.env` files accordingly.
+
+### Email Notifications
+The ReminderService sends email notifications using Gmail SMTP. Update `.env`:
+- `EMAIL_ID`: Your Gmail address
+- `EMAIL_PASS`: Your Gmail app password (not your regular password)
 
 ## 📚 API Documentation
 
@@ -132,13 +230,17 @@ A microservices-based backend system for an airline booking platform, built with
 
 ## 🐳 Docker Support
 
-To run the application using Docker:
+The provided `docker-compose.yml` currently runs only RabbitMQ as the message broker. The service processes themselves are expected to run locally using `npm start` from each service directory.
+
+To start RabbitMQ:
 
 ```bash
-# Build and start all services
-docker-compose up --build
+docker-compose up
+```
 
-# Stop all services
+To stop RabbitMQ:
+
+```bash
 docker-compose down
 ```
 
