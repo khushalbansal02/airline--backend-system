@@ -42,6 +42,22 @@ class FlightRepository{
     }
 }
 
+  async findByAirplaneAndFlightNumber(airplaneId, flightNumber){
+    try{
+      const flight = await Flights.findOne({
+        where: {
+          airplaneId,
+          flightNumber,
+        }
+      });
+      return flight;
+    }
+    catch(error){
+      console.log(error);
+      throw error;
+    }
+  }
+
   async getFlight(flightId){
     try{
       const flight=await Flights.findByPk(flightId);

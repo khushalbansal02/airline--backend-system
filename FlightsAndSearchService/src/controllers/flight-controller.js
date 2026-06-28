@@ -23,6 +23,48 @@ const create= async (req,res)=>{
     });
 }
 }
+
+const createAirplane= async (req,res)=>{
+  try{
+    const airplane=await flightservice.createAirplane(req.body);
+    return res.status(200).json({
+      data:airplane,
+      success:true,
+      err:{},
+      message:"successfully created airplane",
+    })
+  }
+  catch(error){
+    console.log(error);
+    return res.status(500).json({
+      data:{},
+      success:false,
+      message:'Not able to create an airplane',
+      err:error
+    });
+  }
+}
+
+const updateAirplane= async (req,res)=>{
+  try{
+    const airplane=await flightservice.updateAirplane(req.params.id, req.body);
+    return res.status(200).json({
+      data:airplane,
+      success:true,
+      err:{},
+      message:"successfully updated airplane",
+    })
+  }
+  catch(error){
+    console.log(error);
+    return res.status(500).json({
+      data:{},
+      success:false,
+      message:'Not able to update airplane',
+      err:error
+    });
+  }
+}
 const getflight=async(req,res)=>{
   try{ 
     const id=req.params.id;
@@ -81,6 +123,8 @@ const update=async (req,res)=>{
 
 module.exports={
   create,
+  createAirplane,
+  updateAirplane,
   getAll,
   getflight,
   update

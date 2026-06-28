@@ -3,30 +3,51 @@ const bodyParser = require("body-parser");
 
 const { PORT } = require('./config/serverConfig');
 const db=require('./models/index')
-const {City,Airport}=require('./models/index')
+const {City,Airport,Airplane}=require('./models/index')
 const apiroutes=require('./routes/index')
+
+const cleanupDuplicateAirplanes = async () => {
+  try {
+    const duplicates = await db.sequelize.query(
+      `SELECT modelNumber, COUNT(*) as count FROM Airplanes GROUP BY modelNumber HAVING COUNT(*) > 1`,
+      { type: db.Sequelize.QueryTypes.SELECT }
+    );
+
+    for (const row of duplicates) {
+      const airplanes = await Airplane.findAll({
+        where: { modelNumber: row.modelNumber },
+        order: [['id', 'ASC']],
+      });
+      const [keep, ...remove] = airplanes;
+      for (const airplane of remove) {
+        await airplane.destroy();
+        console.log(`Removed duplicate airplane record with modelNumber=${row.modelNumber} id=${airplane.id}`);
+      }
+    }
+  } catch (error) {
+    console.error('Failed to cleanup duplicate airplanes before sync:', error);
+    throw error;
+  }
+};
+
 const setupAndStartServer = async () => {
-    // create the express object
-    
     const app = express();
     app.use(bodyParser.json());
     app.use(bodyParser.urlencoded({extended: true}));
-    
     app.use('/api',apiroutes);
-    app.listen(PORT, async () => {
-        console.log(`Server started at ${PORT}`);
-        if(process.env.SYNC_DB==1){
-            db.sequelize.sync({alter:true}); 
-        }
-        // db.sequelize.sync({alter:true}); // this will sycn all the models at once
-        // const newair=await City.findOne({
-        //     where:{
-        //         id:7
-        //     }
-        // })
-        // const airp= await newair.getAirports();
-        // console.log(airp);
-    });
+
+    try {
+      if(process.env.SYNC_DB==1){
+        await cleanupDuplicateAirplanes();
+        await db.sequelize.sync({alter:true});
+      }
+      app.listen(PORT, () => {
+          console.log(`Server started at ${PORT}`);
+      });
+    } catch (error) {
+      console.error('Server startup failed:', error);
+      process.exit(1);
+    }
 }
 
 setupAndStartServer();

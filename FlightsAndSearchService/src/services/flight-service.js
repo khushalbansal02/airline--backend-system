@@ -17,8 +17,14 @@ class FlightService{
       if(!comparetime(data.arrivalTime,data.departureTime)){
         throw {error:'arrival time cannot be less than the departure time'};
       }
-      console.log(data);
+      const existingFlight = await this.flightRepository.findByAirplaneAndFlightNumber(data.airplaneId, data.flightNumber);
+      if(existingFlight){
+        throw { error: 'A flight with this number already exists for the selected airplane' };
+      }
       const airplane = await this.airplaneRepository.getAirplane(data.airplaneId);
+      if(!airplane){
+        throw { error: 'Airplane not found' };
+      }
       console.log(airplane);
       const flight=await this.flightRepository.createFlight({...data,totalSeats:airplane.capacity});
       return flight;
@@ -26,8 +32,35 @@ class FlightService{
     catch(error){
       console.log("something went wrong at the flight service layer");
       console.log(error);
+      throw error;
     }
 
+  }
+
+  async createAirplane(data){
+    try{
+      const existingAirplane = await this.airplaneRepository.findByModelNumber(data.modelNumber);
+      if(existingAirplane){
+        throw { error: 'An airplane with this modelNumber already exists' };
+      }
+      const airplane=await this.airplaneRepository.createAirplane(data);
+      return airplane;
+    }
+    catch(error){
+      console.log("something went wrong at the airplane service layer");
+      throw error;
+    }
+  }
+
+  async updateAirplane(airplaneId,data){
+    try{
+      const airplane=await this.airplaneRepository.updateAirplane(airplaneId,data);
+      return airplane;
+    }
+    catch(error){
+      console.log("something went wrong at the airplane service layer");
+      throw error;
+    }
   }
   async getFlightData(flightId){
     try{
