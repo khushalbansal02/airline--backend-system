@@ -265,7 +265,32 @@ sequenceDiagram
   ```
 - This endpoint depends on the city already existing in the database.
 
-### Step 4: Create a flight
+### Step 4: Create an airplane
+- Service: FlightsAndSearchService
+- API:
+  - `POST /api/v1/airplanes`
+- Purpose:
+  - add a new airplane that can be used by future flights
+- Required headers:
+  - `Content-Type: application/json`
+- Example request body:
+  ```json
+  {
+    "modelNumber": "Boeing 797",
+    "capacity": 378
+  }
+  ```
+- Expected success response:
+  ```json
+  {
+    "id": 1,
+    "modelNumber": "Boeing 797",
+    "capacity": 378
+  }
+  ```
+- This endpoint creates the airplane master data used by flight creation.
+
+### Step 5: Create a flight
 - Service: FlightsAndSearchService
 - API:
   - `POST /api/v1/flights`
@@ -292,7 +317,7 @@ sequenceDiagram
   - the request body above is the payload used for flight creation; it does not include any seat-count field because the seat capacity is derived from the selected airplane
 - This is one of the most important admin-only management flows.
 
-### Step 5: Manage existing records
+### Step 6: Manage existing records
 - Service: FlightsAndSearchService
 - APIs:
   - `GET /api/v1/city`
@@ -302,12 +327,19 @@ sequenceDiagram
   - `GET /api/v1/flights`
   - `GET /api/v1/flights/:id`
   - `PATCH /api/v1/flights/:id`
+  - `PATCH /api/v1/airplanes/:id`
 - Purpose:
   - view, update, or remove created master data
 - Example update body for a flight:
   ```json
   {
     "price": 550
+  }
+  ```
+- Example update body for an airplane:
+  ```json
+  {
+    "capacity": 400
   }
   ```
 - Example update body for a city:

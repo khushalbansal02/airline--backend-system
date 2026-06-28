@@ -356,6 +356,13 @@ Base URL: `http://localhost:3004`
   ```json
   { "flightId": 1, "userId": 1, "noofSeats": 2 }
   ```
+- Airplane create:
+  ```json
+  {
+    "modelNumber": "Boeing 797",
+    "capacity": 378
+  }
+  ```
 - Flight create:
   ```json
   {

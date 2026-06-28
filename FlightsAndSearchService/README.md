@@ -42,3 +42,46 @@
 
   - code for generating the seed
   'npx sequelize seed:generate --name add-airplanes'
+
+## API Endpoints
+
+### `POST /api/v1/airplanes`
+- Description: Create an airplane.
+- Request headers: `Content-Type: application/json`
+- Request body:
+  ```json
+  {
+    "modelNumber": "Boeing 797",
+    "capacity": 378
+  }
+  ```
+- Response: `200` with airplane object.
+
+### `PATCH /api/v1/airplanes/:id`
+- Description: Update airplane capacity or details.
+- Request headers: `Content-Type: application/json`
+- Request body example:
+  ```json
+  {
+    "capacity": 400
+  }
+  ```
+- Response: `200` with updated airplane data.
+
+### `POST /api/v1/flights`
+- Description: Create a flight.
+- Request headers: `Content-Type: application/json`
+- Request body:
+  ```json
+  {
+    "flightNumber": "AI123",
+    "airplaneId": 1,
+    "departureAirportId": 1,
+    "arrivalAirportId": 2,
+    "departureTime": "2025-12-01 10:00:00",
+    "arrivalTime": "2025-12-01 13:00:00",
+    "price": 500
+  }
+  ```
+- Response: `200` with flight data.
+- Notes: the middleware validates required fields and the service derives flight seat capacity from the selected airplane.
