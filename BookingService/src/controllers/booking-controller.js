@@ -6,20 +6,21 @@ const bookingService= new BookingService();
 const create=async (req, res)=>{
   try {
     const response= await bookingService.createBooking(req.body);
-    console.log(response);
-    
-    return res.status(200).json({
+    return res.status(201).json({
       success:true,
       data:response,
-      message:"successfully booked the flight",
-      error:{}
+      message:"Successfully booked the flight",
+      err:{}
     })
   } catch (error) {
-    return res.status(400).json({
+    // Map the AppError's statusCode (409 for no seats, 404, 400, 502…) instead
+    // of returning 400 for everything (JOURNAL 0.4 / 1.2).
+    const statusCode = error.statusCode || 500;
+    return res.status(statusCode).json({
       success:false,
       data:{},
-      message:" unable to book the flight",
-      error:error,
+      message: error.message || "Unable to book the flight",
+      err: error.message || error,
     })
   }
 }

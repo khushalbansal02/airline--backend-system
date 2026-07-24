@@ -175,4 +175,42 @@ We chose the **atomic conditional write** because seat inventory *is* a counter 
 
 ---
 
-*Challenges 1.2 (Saga + Outbox), 1.3 (Idempotency), 1.4 (Auto-expiry), and Tiers 2–3 are appended as we build them.*
+## Challenge 1.2 — The fake transaction across services (Saga pattern) ⭐
+
+**Symptom.** `createBooking` opened a Sequelize transaction (`sequelize.transaction()`) and *appeared* atomic — but the seat change was a **cross-service HTTP call** (`axios.patch` to the flight service) sitting *outside* that transaction. A local DB transaction can only roll back local writes; it has zero power over a remote service's database. So if the HTTP call succeeded but the local `commit()` failed (or vice versa), the two databases were left permanently inconsistent — a booking with no seats deducted, or seats deducted with no booking.
+
+**Why it matters.** This is *the* defining problem of microservices: **you cannot have an ACID transaction spanning multiple services/databases.** There's no `BEGIN … COMMIT` across network boundaries. Interviewers ask this directly: *"How do you keep data consistent across services without distributed transactions?"* The answer is the Saga pattern, and now you've built one.
+
+**The concept — Sagas & compensating transactions.**
+- A **Saga** breaks one logical operation into a sequence of **local transactions**, each in its own service. Each step has a **compensating action** that semantically undoes it.
+- If step *k* fails, you run the compensations for steps *k-1 … 1* in **reverse order**, returning the system to a consistent state. You trade *atomicity* (all-or-nothing instantly) for **eventual consistency** (the system converges to consistent).
+- Two flavors: **orchestration** (one coordinator drives the steps — what we built, easier to reason about) vs **choreography** (services react to each other's events — more decoupled, harder to trace).
+- Compensation is *semantic*, not a rollback: you can't "un-send" an email, so you send a cancellation; you can't un-charge instantly, so you issue a refund.
+
+**Our saga (orchestrated by BookingService, `booking-service.js`):**
+
+| Step | Forward action | Compensating action |
+|---|---|---|
+| 1 | Create booking as `InProcess` | Mark booking `Cancelled` |
+| 2 | Reserve seats (atomic, remote — Challenge 1.1) | Release seats |
+| 3 | Confirm booking → `Booked` | *(terminal success)* |
+
+Implemented with a **compensation stack**: each successful forward step pushes its undo action; on any failure we pop and run them in reverse. Notifications are deliberately *outside* the saga (a failed email must never cancel a paid booking — that's what the Outbox in 1.3 is for).
+
+**Proof (real run against live services):**
+```
+TEST 1 happy path : book 2 seats  → HTTP 201, status=Booked, seats 350→348
+TEST 2 failure    : book 999999   → HTTP 409, booking auto-Cancelled,
+                                     seats stayed 348 (compensation released nothing to leak)
+```
+The failed booking left a `Cancelled` row and **zero seat leakage** — the saga unwound correctly.
+
+**Interview drill.**
+- *Q: Why can't you just use a distributed transaction (2PC)?* → Two-Phase Commit exists but is rarely used in microservices: it holds locks across services for the whole protocol (kills availability and throughput), needs a coordinator that's a single point of failure, and most modern datastores/brokers don't support it well. Sagas trade strict atomicity for availability + eventual consistency.
+- *Q: Orchestration vs choreography?* → Orchestration = central coordinator (clear control flow, easier debugging, but the coordinator is a hotspot). Choreography = event-driven, each service reacts (decoupled, scales, but flow is implicit and harder to trace).
+- *Q: What if a compensation itself fails?* → It must be retryable/idempotent; persistent failures go to a dead-letter/reconciliation queue and alert a human. Never silently swallow it.
+- *Q: How is this "consistent" if there's a window where seats are reserved but the booking isn't confirmed?* → It's *eventually* consistent. During the window the seat is held (correct — nobody else can take it). If the process dies mid-saga, the auto-expiry sweeper (Challenge 1.4) reclaims the orphaned hold.
+
+---
+
+*Challenges 1.3 (Outbox + Idempotency), 1.4 (Auto-expiry), and Tiers 2–3 are appended as we build them.*
