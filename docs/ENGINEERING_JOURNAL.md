@@ -415,4 +415,35 @@ DLQ path   : publish non-JSON to airline_events/reminder_key
 
 ---
 
-*Challenge 2.5 (validation) and Tier 3 are appended as we build them.*
+## Challenge 2.5 — Trusting client input (Schema validation)
+
+**Symptom.** Write endpoints accepted whatever the client sent. The booking endpoint did only ad-hoc checks deep in the service; a malformed body (missing `userId`, negative seats, a string where a number belongs) got partway through business logic before failing, with vague errors.
+
+**Why it matters.** *Never trust client input* — it's both a correctness and a security principle. Validating at the **edge** (before business logic) rejects bad requests fast with precise, field-level errors, and shrinks the surface for injection/abuse. It also documents the contract: the schema *is* the API spec.
+
+**The concept — schema validation & fail-fast at the boundary.**
+- Define a **schema** (types, ranges, required fields) and validate the request against it in middleware, before the controller. Invalid → **400** with which fields failed and why.
+- **Coercion + defaults:** JSON/query values are often strings; the schema coerces `"2"`→`2` and applies defaults (`noofSeats` default 1), so downstream code gets clean, typed data.
+- Keeping validation in **middleware** keeps controllers focused on orchestration and makes the rule reusable across routes.
+
+**The fix (`middlewares/validate.js`, booking route):** a `zod` schema (`flightId`, `userId` positive ints; `noofSeats` 1–50, default 1) enforced by a reusable `validateBody` middleware. Also removed leftover test endpoints (`/publish`, `/hi`) and dead controller code.
+
+**Proof:**
+```
+{flightId:2, noofSeats:-3}            -> 400 [userId: expected number; noofSeats: >0]
+{flightId:"abc", userId:2}            -> 400 [flightId: expected number]
+{flightId:2, userId:2, noofSeats:1}   -> 201 Created
+```
+
+**Interview drill.**
+- *Q: Where should validation live?* → At the edge, in middleware, before business logic — fail fast with clear errors, and keep the rule out of controllers/services.
+- *Q: Validation vs sanitization?* → Validation rejects malformed input; sanitization neutralizes dangerous content (e.g. escaping). Parameterized queries/ORM (which we use) handle SQL injection; validation handles shape/range/type.
+- *Q: Why coerce and default in the schema?* → Transport gives you strings; coercing centralizes the conversion and guarantees typed, complete data downstream instead of scattering `Number(...)` and `|| default` everywhere.
+
+---
+
+# Tier 2 summary — what to say in an interview
+
+> *"I brought it up to production hygiene: Jest unit tests with a dependency-injected saga and GitHub Actions CI; durable queues with persistent messages and a dead-letter queue for poison messages; health/readiness probes; structured JSON logging with correlation IDs that trace a request across services; and schema validation at the edge. So the system isn't just correct — it's tested, observable, resilient, and safe to change."*
+
+*Tier 3 (the X-factor differentiator) is appended next.*
