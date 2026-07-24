@@ -244,4 +244,38 @@ Seats decremented              : exactly 3 (once), not 3 × N requests
 
 ---
 
-*Challenges 1.4 (Outbox), 1.5 (Auto-expiry), and Tiers 2–3 are appended as we build them.*
+## Challenge 1.4 — Losing events on crash (Transactional Outbox) ⭐
+
+**Symptom.** The saga confirmed the booking in MySQL and *then* published the notification event to RabbitMQ as two separate steps. If the process crashed (or the broker was briefly down) *between* the DB commit and the publish, the booking was confirmed but **the event vanished** — the customer never gets their confirmation. The reverse ordering is just as broken: publish first, then a DB failure means you've announced a booking that doesn't exist.
+
+**Why it matters.** This is the **dual-write problem**, and it's one of the most-asked senior/staff-level design questions. You are writing to two independent systems (a database and a message broker) and there is **no transaction that spans both**. Naively doing them in sequence *always* has a crash window. The Transactional Outbox is the standard, production-grade answer (used at essentially every event-driven company).
+
+**The concept — The dual-write problem & the Outbox pattern.**
+- You can't atomically "commit to DB AND publish to broker." So don't try. Instead, **write the event as a row in an `outbox` table inside the same local DB transaction** as the state change. Now the state change and the record-of-intent-to-publish are **atomic** — they commit together or not at all (this the database *can* guarantee).
+- A separate **relay/poller** reads `PENDING` outbox rows and publishes them to the broker, marking each `PUBLISHED` on success. If a publish fails, the row stays `PENDING` and is retried. This yields **at-least-once delivery** — the event is never lost, though it may be delivered more than once (hence consumers must be idempotent).
+- Keep all network I/O (e.g. resolving the user's email) **in the relay, not in the transaction**, so the transaction stays short and local.
+- The mature evolution of this is **Change Data Capture (CDC)** — a tool like Debezium tails the DB's write-ahead log and emits the outbox inserts to Kafka, removing the polling relay entirely. Good thing to mention as "how I'd scale it."
+
+**The fix (`booking-service.js` step 3, `outbox-*.js`, migration + model):**
+1. New `Outboxes` table (`eventType`, `payload`, `status`, `publishedAt`), indexed on `status`.
+2. Booking confirmation and the outbox insert now happen in **one `sequelize.transaction()`**.
+3. `outbox-relay.js` polls every 5s, resolves the recipient email, publishes to RabbitMQ, and marks the row `PUBLISHED`. Failures stay `PENDING` for retry.
+
+**Proof (real run, full chain):**
+```
+POST /bookings           → booking #11 Booked
+Outboxes row (t+0s)      → id 1, BOOKING_CONFIRMED, status=PENDING
+Outboxes row (t+6s)      → id 1, status=PUBLISHED, publishedAt set
+ReminderService DB       → NotificationTicket #27 "Your flight booking is confirmed", SUCCESS
+```
+The event survived as a committed DB row *before* it was ever published, then flowed all the way to a notification — no crash window.
+
+**Interview drill.**
+- *Q: What's the dual-write problem?* → Writing to two systems (DB + broker) with no shared transaction; any crash between them loses or orphans data.
+- *Q: How does the Outbox solve it?* → Write the event to an outbox table in the same DB transaction as the state change (atomic), then relay it to the broker asynchronously with retries.
+- *Q: Doesn't the relay double-publish sometimes?* → Yes — it's at-least-once. That's acceptable because consumers are idempotent (tie-in to Challenge 1.3). Exactly-once is achieved as at-least-once delivery + idempotent processing.
+- *Q: Polling is inefficient at scale — what then?* → Change Data Capture (Debezium) streaming the outbox table's WAL to Kafka, or a DB-native notification (e.g. Postgres LISTEN/NOTIFY) to avoid constant polling.
+
+---
+
+*Challenge 1.5 (Auto-expiry) and Tiers 2–3 are appended as we build them.*

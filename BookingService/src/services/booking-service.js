@@ -1,13 +1,14 @@
 const { BookingRepository } = require('../repository/index');
+const OutboxRepository = require('../repository/outbox-repository');
 const axios = require('axios');
-const { FLIGHT_SERVICE_PATH, AUTH_SERVICE_PATH, REMINDER_BINDING_KEY } = require('../config/server-config');
-const { createChannel, publishMessage } = require('../utils/messageQueue');
+const { FLIGHT_SERVICE_PATH } = require('../config/server-config');
+const { sequelize } = require('../models');
 const AppError = require('../utils/app-error');
-const moment = require('moment');
 
 class BookingService {
   constructor() {
     this.bookingRepository = new BookingRepository();
+    this.outboxRepository = new OutboxRepository();
   }
 
   /**
@@ -101,17 +102,29 @@ class BookingService {
         axios.post(`${FLIGHT_SERVICE_PATH}/api/v1/flights/${data.flightId}/seats/release`, { seats })
       );
 
-      // ---- Step 3: confirm booking ----
-      const finalBooking = await this.bookingRepository.updateBooking(booking.id, {
-        status: 'Booked',
-      });
-
-      // ---- best-effort notification (made reliable via Outbox in JOURNAL 1.3) ----
-      // A failed email must NOT cancel a confirmed, paid booking, so this is
-      // isolated from the saga's compensation flow.
-      await this.publishBookingConfirmed(data.userId, booking.id).catch((e) =>
-        console.log('notification publish failed (booking still succeeded):', e.message)
-      );
+      // ---- Step 3: confirm booking + write outbox event ATOMICALLY (JOURNAL 1.4) ----
+      // The status change and the "please publish this event" record commit in
+      // ONE local transaction. This defeats the dual-write problem: we can never
+      // have a confirmed booking whose notification event was lost (or an event
+      // for a booking that didn't commit). A background relay publishes it.
+      const t = await sequelize.transaction();
+      let finalBooking;
+      try {
+        finalBooking = await this.bookingRepository.updateBooking(
+          booking.id,
+          { status: 'Booked' },
+          { transaction: t }
+        );
+        await this.outboxRepository.create(
+          'BOOKING_CONFIRMED',
+          { bookingId: booking.id, userId: data.userId, seats },
+          { transaction: t }
+        );
+        await t.commit();
+      } catch (e) {
+        await t.rollback();
+        throw e;
+      }
 
       return finalBooking;
     } catch (error) {
@@ -127,20 +140,6 @@ class BookingService {
       }
       throw error;
     }
-  };
-
-  publishBookingConfirmed = async (userId, bookingId) => {
-    const userRes = await axios.get(`${AUTH_SERVICE_PATH}/api/v1/user/${userId}`);
-    const userEmail = userRes.data.data.email;
-    const notifyAt = moment().add(1, 'day').format('YYYY-MM-DD HH:mm:ss');
-    const channel = await createChannel();
-    const payload = {
-      subject: 'Your flight booking is confirmed',
-      content: `Booking #${bookingId} is confirmed. Thank you for flying with us.`,
-      recepientEmail: userEmail,
-      notificationTime: notifyAt,
-    };
-    await publishMessage(channel, REMINDER_BINDING_KEY, JSON.stringify(payload));
   };
 }
 
