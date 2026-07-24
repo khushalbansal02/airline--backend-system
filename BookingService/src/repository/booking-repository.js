@@ -4,7 +4,7 @@ const {Booking}= require('../models/index');
 class BookingRepository{
 
   async create(data){
-   
+
     try{
         const data1= await Booking.create(data);
         return data1;
@@ -12,6 +12,17 @@ class BookingRepository{
     catch(error){
       console.log(error);
       console.log("something went wrong at the repolayer ");
+      throw error;
+    }
+  }
+
+  // Look up an existing booking by its idempotency key (JOURNAL 1.3).
+  async findByIdempotencyKey(idempotencyKey){
+    try{
+      return await Booking.findOne({ where: { idempotencyKey } });
+    }
+    catch(error){
+      console.log("something went wrong looking up idempotency key");
       throw error;
     }
   }

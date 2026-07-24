@@ -38,6 +38,13 @@ module.exports = (sequelize, DataTypes) => {
       allowNull:false,
       defaultValue:0,
     },
+    // Client-supplied key that makes booking creation idempotent (JOURNAL 1.3).
+    // UNIQUE => at most one booking can ever exist per key, even under a race.
+    idempotencyKey:{
+      type:DataTypes.STRING,
+      allowNull:true,
+      unique:true,
+    },
   }, {
     sequelize,
     modelName: 'Booking',

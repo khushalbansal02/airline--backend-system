@@ -36,6 +36,18 @@ class BookingService {
         throw new AppError('noofSeats must be a positive integer', 400);
       }
 
+      // ---- idempotency: replay protection (JOURNAL 1.3) ----
+      // If this request carries a key we've already processed, return the
+      // existing booking instead of creating a second one. This makes safe
+      // client retries and accidental double-clicks harmless.
+      const idempotencyKey = data.idempotencyKey || null;
+      if (idempotencyKey) {
+        const existing = await this.bookingRepository.findByIdempotencyKey(idempotencyKey);
+        if (existing) {
+          return existing;
+        }
+      }
+
       // ---- fetch flight for pricing (the authoritative seat check is step 2) ----
       let flightData;
       try {
@@ -50,13 +62,26 @@ class BookingService {
       const totalCost = flightData.price * seats;
 
       // ---- Step 1: create booking as InProcess ----
-      const booking = await this.bookingRepository.create({
-        flightId: data.flightId,
-        userId: data.userId,
-        noofSeats: seats,
-        totalCost,
-        status: 'InProcess',
-      });
+      // If two concurrent requests share an idempotencyKey and both pass the
+      // check above, the UNIQUE constraint makes the second create() throw —
+      // we catch that specific case and return the winner's booking.
+      let booking;
+      try {
+        booking = await this.bookingRepository.create({
+          flightId: data.flightId,
+          userId: data.userId,
+          noofSeats: seats,
+          totalCost,
+          status: 'InProcess',
+          idempotencyKey,
+        });
+      } catch (e) {
+        if (idempotencyKey && e.name === 'SequelizeUniqueConstraintError') {
+          const existing = await this.bookingRepository.findByIdempotencyKey(idempotencyKey);
+          if (existing) return existing;
+        }
+        throw e;
+      }
       compensations.push(() =>
         this.bookingRepository.updateBooking(booking.id, { status: 'Cancelled' })
       );

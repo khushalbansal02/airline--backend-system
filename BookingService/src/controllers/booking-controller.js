@@ -5,7 +5,10 @@ const {REMINDER_BINDING_KEY}= require('../config/server-config')
 const bookingService= new BookingService();
 const create=async (req, res)=>{
   try {
-    const response= await bookingService.createBooking(req.body);
+    // Standard header for idempotent APIs (Stripe, etc.). Falls back to a body
+    // field so it's easy to test from any client (JOURNAL 1.3).
+    const idempotencyKey = req.headers['idempotency-key'] || req.body.idempotencyKey;
+    const response= await bookingService.createBooking({ ...req.body, idempotencyKey });
     return res.status(201).json({
       success:true,
       data:response,

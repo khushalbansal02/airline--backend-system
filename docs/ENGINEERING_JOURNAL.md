@@ -213,4 +213,35 @@ The failed booking left a `Cancelled` row and **zero seat leakage** — the saga
 
 ---
 
-*Challenges 1.3 (Outbox + Idempotency), 1.4 (Auto-expiry), and Tiers 2–3 are appended as we build them.*
+## Challenge 1.3 — Double-booking on retry (Idempotency)
+
+**Symptom.** `createBooking` had no protection against being called twice for the same intent. A user double-clicking "Book", a mobile client retrying after a flaky network, or a load balancer replaying a request would each create a **separate booking** and reserve seats **again** — double charge, double seat consumption.
+
+**Why it matters.** Retries are not an edge case; they are *normal* in distributed systems. Networks drop responses, clients time out and retry, queues redeliver. Any endpoint that changes state or money **must** be safe to call more than once. This is why every serious payments/booking API (Stripe, PayPal, airlines) supports an idempotency key. It's a very common interview and design-review topic.
+
+**The concept — Idempotency & at-least-once delivery.**
+- An operation is **idempotent** if doing it N times has the same effect as doing it once. `GET`, `PUT`, `DELETE` are idempotent by HTTP definition; `POST` is *not* — so we make it idempotent explicitly.
+- The client sends a unique **Idempotency-Key** (a UUID it generates). The server records it with the result. A repeat with the same key returns the *original* result instead of re-executing.
+- The subtle part is the **race**: two requests with the same key arriving simultaneously both pass the "have I seen this key?" check. The fix is a **UNIQUE database constraint** on the key — the DB guarantees only one row can win; the loser catches the constraint violation and returns the winner's booking. The database is the source of truth for "who's first," not application code.
+
+**The fix (`booking-service.js`, `booking-repository.js`, migration + model):**
+1. Added a `idempotencyKey` column with a **UNIQUE** constraint on `Bookings`.
+2. Controller reads the standard `Idempotency-Key` header.
+3. Service: check for an existing booking with the key → if found, return it (fast path). On create, if a concurrent request already inserted the key, the `SequelizeUniqueConstraintError` is caught and we return the existing booking (race-safe path).
+
+**Proof (real run):**
+```
+Same key sent 2x sequentially : both returned booking #10 (same row)
+Same key fired 5x concurrently : exactly 1 booking exists with that key
+Seats decremented              : exactly 3 (once), not 3 × N requests
+```
+
+**Interview drill.**
+- *Q: How do you make a POST idempotent?* → Client sends a unique key; server stores key→result; repeats return the stored result. Enforce uniqueness with a DB constraint to survive concurrent duplicates.
+- *Q: Where do you store the key and for how long?* → With the created resource (as we did) or a dedicated idempotency table with a TTL (e.g. 24h). TTL bounds storage while covering realistic retry windows.
+- *Q: Idempotency vs deduplication vs exactly-once?* → "Exactly-once delivery" is largely a myth in distributed systems; you get **at-least-once** delivery + **idempotent processing**, which together *behave* like exactly-once. Idempotency is how you tolerate the duplicates that at-least-once guarantees you'll get.
+- *Q: What if the first request is still in flight when the retry arrives?* → The UNIQUE constraint serializes them; the second either returns the in-progress/So-far result or is told to retry. Some systems store a "pending" state per key to return 409/202 while the first completes.
+
+---
+
+*Challenges 1.4 (Outbox), 1.5 (Auto-expiry), and Tiers 2–3 are appended as we build them.*
