@@ -379,4 +379,40 @@ DLQ path   : publish non-JSON to airline_events/reminder_key
 
 ---
 
-*Challenges 2.3 (health checks), 2.4 (structured logging), 2.5 (validation), and Tier 3 are appended as we build them.*
+## Challenge 2.3 — No health checks (Liveness/readiness probes)
+
+**Symptom.** No way to ask a service "are you alive and able to serve traffic?" A crashed or DB-disconnected instance would keep receiving requests and failing them.
+
+**Why it matters.** Load balancers, Kubernetes, and uptime monitors need a cheap endpoint to decide whether to route traffic to an instance. Without it, a sick instance stays in rotation and users hit errors.
+
+**The concept — liveness vs readiness.** *Liveness* = "is the process up?" (restart it if not). *Readiness* = "can it serve requests right now?" (e.g. is its DB reachable?). A readiness check that pings the DB and returns **503** when it's down lets the orchestrator route around the bad node without killing it.
+
+**The fix.** `GET /health` on all five services; the DB-backed ones (auth, booking, flights) call `sequelize.authenticate()` and return 503 if the DB is unreachable. Verified all five respond.
+
+## Challenge 2.4 — Unsearchable logs & no request tracing (Structured logging + correlation IDs) ⭐
+
+**Symptom.** Every service logged with `console.log` — unstructured text. You couldn't filter by level or service, and there was **no way to follow one user action across services**. When a booking failed, you couldn't tell which of the booking/flight/auth calls broke or connect their log lines.
+
+**Why it matters.** In a monolith a stack trace is enough. In microservices, one user action fans out across several processes, each writing to its own log. Without a shared **correlation ID**, debugging a production issue is guesswork. Structured JSON logs + correlation IDs are the foundation of observability (the "logs" pillar, alongside metrics and traces).
+
+**The concept — structured logging & distributed tracing.**
+- **Structured logging:** emit one JSON object per line (`{level, service, correlationId, msg, ...}`) instead of free text, so a log aggregator can index and query by field. `pino` is a fast JSON logger; `pino-http` logs every request automatically.
+- **Correlation ID:** a unique id minted at the edge (or honored from an incoming `X-Correlation-Id`) and **propagated on every downstream call** via a header. Every log line for that user action carries the same id, so `correlationId=abc` returns the entire cross-service story.
+- This is the poor-man's version of full **distributed tracing** (OpenTelemetry / Jaeger), which adds spans and timing on top of the same idea.
+
+**The fix (`config/logger.js`, `middlewares/correlation-id.js`, `index.js`, saga):**
+1. `pino` JSON logger (pretty in dev, raw JSON in prod, silent in tests).
+2. Correlation-ID middleware honors incoming `X-Correlation-Id` or mints a UUID, attaches it to the request, and echoes it on the response.
+3. `pino-http` logs each request with its correlationId.
+4. The saga forwards the id as `x-correlation-id` on its outgoing calls to the flight service and logs saga events (`seats reserved`, `booking confirmed`, `saga failed, compensating`) with it.
+
+**Proof:** `POST /bookings` with `X-Correlation-Id: trace-abc-123` → the id is echoed in the response header and forwarded to the flight service, so the whole flow shares one id.
+
+**Interview drill.**
+- *Q: Three pillars of observability?* → Logs (what happened), metrics (aggregate numbers/trends), traces (the path + timing of one request across services). Correlation IDs bridge logs into traces.
+- *Q: How do you debug a request that touched five services?* → Propagate a correlation/trace id from the edge through every hop; filter all logs by it. Better: distributed tracing (OpenTelemetry) for spans and latency per hop.
+- *Q: Why structured over plain logs?* → Machine-queryable: filter/aggregate/alert by field in a log system. Plain text needs brittle regex parsing.
+
+---
+
+*Challenge 2.5 (validation) and Tier 3 are appended as we build them.*

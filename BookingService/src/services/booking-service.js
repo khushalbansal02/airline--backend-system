@@ -4,6 +4,7 @@ const axios = require('axios');
 const { FLIGHT_SERVICE_PATH } = require('../config/server-config');
 const { sequelize } = require('../models');
 const AppError = require('../utils/app-error');
+const logger = require('../config/logger');
 
 class BookingService {
   // Dependencies are injectable so the saga can be unit-tested with mocks
@@ -28,6 +29,10 @@ class BookingService {
    */
   createBooking = async (data) => {
     const compensations = []; // LIFO stack of undo actions
+    // Forward the correlation id downstream so one id traces the whole flow.
+    const correlationId = data.correlationId;
+    const log = logger.child({ correlationId });
+    const cfg = correlationId ? { headers: { 'x-correlation-id': correlationId } } : {};
 
     try {
       // ---- validate input ----
@@ -54,7 +59,7 @@ class BookingService {
       // ---- fetch flight for pricing (the authoritative seat check is step 2) ----
       let flightData;
       try {
-        const res = await axios.get(`${FLIGHT_SERVICE_PATH}/api/v1/flights/${data.flightId}`);
+        const res = await axios.get(`${FLIGHT_SERVICE_PATH}/api/v1/flights/${data.flightId}`, cfg);
         flightData = res.data.data;
       } catch (e) {
         throw new AppError(`Flight service unavailable or flight ${data.flightId} not found`, 502);
@@ -95,7 +100,7 @@ class BookingService {
       const reserveRes = await axios.post(
         `${FLIGHT_SERVICE_PATH}/api/v1/flights/${data.flightId}/seats/reserve`,
         { seats },
-        { validateStatus: (s) => s === 200 || s === 409 }
+        { ...cfg, validateStatus: (s) => s === 200 || s === 409 }
       );
       if (reserveRes.status === 409) {
         throw new AppError('Insufficient seats available', 409);
@@ -104,8 +109,9 @@ class BookingService {
       // release them if this booking is later orphaned mid-saga (JOURNAL 1.5).
       await this.bookingRepository.updateBooking(booking.id, { seatsReserved: true });
       compensations.push(() =>
-        axios.post(`${FLIGHT_SERVICE_PATH}/api/v1/flights/${data.flightId}/seats/release`, { seats })
+        axios.post(`${FLIGHT_SERVICE_PATH}/api/v1/flights/${data.flightId}/seats/release`, { seats }, cfg)
       );
+      log.info({ bookingId: booking.id, flightId: data.flightId, seats }, 'seats reserved');
 
       // ---- Step 3: confirm booking + write outbox event ATOMICALLY (JOURNAL 1.4) ----
       // The status change and the "please publish this event" record commit in
@@ -131,16 +137,20 @@ class BookingService {
         throw e;
       }
 
+      log.info({ bookingId: booking.id }, 'booking confirmed');
       return finalBooking;
     } catch (error) {
       // Unwind the saga: run compensations in REVERSE order.
+      if (compensations.length) {
+        log.warn({ err: error.message, steps: compensations.length }, 'saga failed, compensating');
+      }
       for (const compensate of compensations.reverse()) {
         try {
           await compensate();
         } catch (ce) {
           // A failed compensation is serious — in production this would alert
           // and/or go to a reconciliation queue. We log loudly and continue.
-          console.log('compensation step failed:', ce.message);
+          log.error({ err: ce.message }, 'compensation step failed');
         }
       }
       throw error;

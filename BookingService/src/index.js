@@ -4,6 +4,9 @@ const axios= require('axios');
 const bodyParser=require('body-parser')
 const apiRoutes=require('./routes/index')
 const db=require('./models/index');
+const pinoHttp = require('pino-http');
+const logger = require('./config/logger');
+const correlationId = require('./middlewares/correlation-id');
 const { startOutboxRelay } = require('./utils/outbox-relay');
 const { startBookingSweeper } = require('./utils/booking-sweeper');
 const BOOKING_HOLD_TTL_MINUTES = Number(process.env.BOOKING_HOLD_TTL_MINUTES) || 15;
@@ -11,6 +14,9 @@ const setUpAndStartServer=async ()=>{
 const app= express();
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({extended:true}));
+// Observability: correlation id first, then structured request logging (JOURNAL 2.4)
+app.use(correlationId);
+app.use(pinoHttp({ logger, customProps: (req) => ({ correlationId: req.correlationId }) }));
 app.use('/api',apiRoutes);
 
 // Liveness/readiness probe (JOURNAL 2.3). Returns 503 if the DB is unreachable
