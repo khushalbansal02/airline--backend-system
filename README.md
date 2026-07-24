@@ -92,11 +92,12 @@ Captured results live in **[loadtest/RESULTS.md](loadtest/RESULTS.md)**.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/api/v1/signup` · `/signin` | Register / login (JWT) |
-| `GET` | `/api/v1/flights` | Search flights (cached) |
-| `POST` | `/api/v1/flights/:id/seats/reserve` | Atomic seat reservation |
-| `POST` | `/api/v1/bookings` | Create a booking (idempotent; `Idempotency-Key` header) |
+| `POST` | `/auth/signup` · `/auth/signin` | Register / login (JWT) — public |
+| `GET` | `/flights` | Search flights (cached) — public |
+| `POST` | `/bookings` | Create a booking — **requires JWT**; user id from the token, idempotent (`Idempotency-Key`) |
 | `GET` | `/health` | Liveness/readiness (every service) |
+
+All client traffic goes through the **API Gateway** (`:3006`), which verifies the JWT once at the edge, forwards the authenticated user id downstream, and applies per-user rate limiting. Services also expose their own `/api/v1/*` routes directly (used internally).
 
 ## 📈 What I'd do next
 

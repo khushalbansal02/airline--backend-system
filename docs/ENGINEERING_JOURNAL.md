@@ -517,6 +517,43 @@ Grafana            : dashboard "Airline Booking System" auto-provisioned at :300
 
 ---
 
+## Challenge 3.3 — Weak, scattered edge (API Gateway hardening) ⭐
+
+**Symptom.** The gateway only proxied one service, with hardcoded URLs, an IP-based rate limit, and auth done by making an HTTP round-trip to the auth service **on every request**. Other services were reachable only by knowing their internal ports, each would have had to re-implement auth, and a client could set any `userId` in a booking body — so **user A could book as user B**.
+
+**Why it matters.** In microservices the gateway is the **single front door**: it's where you centralize cross-cutting concerns (routing, authN, rate limiting, TLS termination, request shaping) so N services don't each reimplement them. Getting identity right here is a real security control — the gateway is the trust boundary between the untrusted internet and the trusted internal network.
+
+**The concepts.**
+- **API Gateway pattern:** one entry point routes to many services by path prefix, and owns cross-cutting concerns. Services can then assume traffic is already authenticated/rate-limited.
+- **Centralized authentication + token verification at the edge:** verify the JWT **locally** with the shared secret (no per-request network hop to the auth service — faster and more resilient), then **propagate identity** to downstream services via a trusted header (`x-user-id`). Internal services trust the gateway (defense-in-depth: they're not exposed publicly).
+- **Never trust client-supplied identity:** the booking `userId` now comes from the **verified token**, not the request body — so an authenticated user can only book for themselves. The body value is ignored.
+- **Per-user vs per-IP rate limiting:** IP limits are unfair behind NAT/corporate proxies (many users, one IP) and trivially bypassed (many IPs, one attacker). Keying the limiter on the authenticated **user id** is the correct unit of abuse control for protected routes; a coarse per-IP limit stays as a global safety net.
+
+**The fix (`API_Gateway/index.js`, `.env`):**
+- All services behind clean prefixes: `/auth/*` (public), `/flights/*` (reads public, writes authenticated), `/bookings/*` (fully protected).
+- JWT verified locally with the shared secret; decoded user attached and forwarded as `x-user-id` / `x-user-email`.
+- Booking controller uses `x-user-id` over any body `userId` (schema made `userId` optional since it's derived from the token).
+- Two-tier rate limiting: global per-IP (300/15m) + per-user (30/min) on bookings.
+- Config (secret, service URLs) moved to env. (Gotcha fixed: proxies are root-mounted with `pathFilter` because `app.use('/prefix', proxy)` makes Express strip the prefix and breaks `pathRewrite`.)
+
+**Proof (real runs, all through the gateway on :3006):**
+```
+POST /auth/signup, /auth/signin        -> 200, JWT issued
+GET  /flights (no token)               -> 200 (public read)
+POST /bookings (no token)              -> 401 Authentication token required
+POST /bookings (token, body userId=999)-> 201, booking.userId = 15 (from JWT, body ignored)
+40 bookings in <1 min with one token   -> 30x pass, 10x 429 (per-user limit)
+```
+
+**Interview drill.**
+- *Q: What does an API gateway do?* → Single entry point: routing, authN/authZ, rate limiting, TLS termination, request/response shaping, observability — centralizing cross-cutting concerns so services stay focused on business logic.
+- *Q: Verify the JWT at the gateway or each service?* → At the gateway (once) for edge authN, then propagate a trusted identity header; services can additionally authorize. Verifying locally with the shared secret avoids a per-request hop to the auth service.
+- *Q: Why not trust the userId in the request body?* → Clients are untrusted; they'd impersonate others. Identity must come from the verified token. This is a classic IDOR/broken-access-control class of bug.
+- *Q: Per-IP vs per-user rate limiting?* → Per-IP is unfair behind shared IPs and easy to evade with many IPs; per-user (from the token) is the right unit for authenticated abuse control. Use both: coarse per-IP net + fine per-user.
+- *Q: How do you stop clients bypassing the gateway and hitting services directly?* → Network isolation: services live on a private network; only the gateway is public (enforced by k8s NetworkPolicies / security groups / a service mesh with mTLS).
+
+---
+
 # Project summary — the whole story in one paragraph
 
 > *"I took a tutorial-grade airline booking backend and hardened it to production standards. I fixed correctness bugs (including a silent messaging failure), then solved the hard distributed-systems problems: atomic seat reservation (zero overselling, load-tested), a Saga with compensating transactions replacing an impossible cross-service ACID transaction, idempotency keys, the Transactional Outbox for crash-safe events, and an auto-expiry sweeper for orphaned holds. I added engineering rigor — unit tests + CI, durable queues with a dead-letter queue, health checks, structured logging with correlation-ID tracing, and edge validation. Finally I added a Redis cache-aside layer with generation-counter invalidation that cut search latency ~4.5×. Every change is documented with the problem, the concept, and the trade-offs."*

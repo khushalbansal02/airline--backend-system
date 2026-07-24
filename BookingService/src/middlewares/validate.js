@@ -13,7 +13,10 @@ const positiveInt = z.coerce.number().int().positive();
 
 const createBookingSchema = z.object({
   flightId: positiveInt,
-  userId: positiveInt,
+  // Optional in the body: when the request comes through the gateway, the user
+  // id is derived from the JWT (x-user-id) — the controller injects it and the
+  // saga still enforces its presence (JOURNAL 3.3).
+  userId: positiveInt.optional(),
   noofSeats: positiveInt.max(50).optional().default(1),
 });
 

@@ -7,8 +7,12 @@ const create = async (req, res) => {
     // Standard header for idempotent APIs (Stripe, etc.). Falls back to a body
     // field so it's easy to test from any client (JOURNAL 1.3).
     const idempotencyKey = req.headers['idempotency-key'] || req.body.idempotencyKey;
+    // Prefer the gateway-verified user id (x-user-id) over any client-supplied
+    // userId, so an authenticated user can only book for themselves (JOURNAL 3.3).
+    const userId = req.headers['x-user-id'] || req.body.userId;
     const response = await bookingService.createBooking({
       ...req.body,
+      userId,
       idempotencyKey,
       correlationId: req.correlationId,
     });
