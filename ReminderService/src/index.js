@@ -14,6 +14,8 @@ app.use(bodyParser.urlencoded({extended:true}))
  const channel= await createChannel();
  subscribeMessage(channel,emailService.createNotification,REMINDER_BINDING_KEY)
 app.post('/api/v1/tickets',TickerController.create);
+// Liveness probe (JOURNAL 2.3)
+app.get('/health',(req,res)=>res.status(200).json({status:'ok',service:'reminder'}));
 app.listen(PORT,()=>{
   console.log(`server started at ${PORT}`);
  setUpJobs();

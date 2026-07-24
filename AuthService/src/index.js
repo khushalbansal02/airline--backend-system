@@ -8,6 +8,15 @@ const prepareAndStartServer=()=>{
   app.use(bodyParser.json());
   app.use(bodyParser.urlencoded({extended:true}));
   app.use('/api',apiroutes);
+  // Liveness/readiness probe (JOURNAL 2.3)
+  app.get('/health', async (req, res) => {
+    try {
+      await db.sequelize.authenticate();
+      return res.status(200).json({ status: 'ok', service: 'auth', db: 'up' });
+    } catch (e) {
+      return res.status(503).json({ status: 'degraded', service: 'auth', db: 'down' });
+    }
+  });
 app.listen(PORT,()=>{
   console.log(`server started on ${PORT}` );
   // Schema is managed by migrations (the source of truth). Auto-sync is a

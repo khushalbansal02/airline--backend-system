@@ -13,6 +13,17 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({extended:true}));
 app.use('/api',apiRoutes);
 
+// Liveness/readiness probe (JOURNAL 2.3). Returns 503 if the DB is unreachable
+// so a load balancer / orchestrator can stop routing traffic to this instance.
+app.get('/health', async (req, res) => {
+  try {
+    await db.sequelize.authenticate();
+    return res.status(200).json({ status: 'ok', service: 'booking', db: 'up' });
+  } catch (e) {
+    return res.status(503).json({ status: 'degraded', service: 'booking', db: 'down' });
+  }
+});
+
 app.listen(PORT,async ()=>{
   console.log(`Server Started at ${PORT}`)
     // Migrations are the source of truth; auto-sync is opt-in dev-only (JOURNAL 0.5)

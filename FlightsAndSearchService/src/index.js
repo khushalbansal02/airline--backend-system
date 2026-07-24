@@ -35,6 +35,15 @@ const setupAndStartServer = async () => {
     app.use(bodyParser.json());
     app.use(bodyParser.urlencoded({extended: true}));
     app.use('/api',apiroutes);
+    // Liveness/readiness probe (JOURNAL 2.3)
+    app.get('/health', async (req, res) => {
+      try {
+        await db.sequelize.authenticate();
+        return res.status(200).json({ status: 'ok', service: 'flights', db: 'up' });
+      } catch (e) {
+        return res.status(503).json({ status: 'degraded', service: 'flights', db: 'down' });
+      }
+    });
 
     try {
       // Standardized on DB_SYNC across all services; opt-in, dev-only (JOURNAL 0.5)

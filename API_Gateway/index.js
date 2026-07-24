@@ -54,9 +54,11 @@ app.use(
 );
 app.get('/home',(req,res)=>{
   return res.status(200).json({
-    hello:"hi", 
-  }) 
+    hello:"hi",
+  })
 })
+// Liveness probe (JOURNAL 2.3)
+app.get('/health',(req,res)=>res.status(200).json({status:'ok',service:'gateway'}))
 
 app.listen(3006,()=>{ 
   console.log(`server started at port ${PORT}`);
