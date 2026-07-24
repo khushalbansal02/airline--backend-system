@@ -1,0 +1,13 @@
+# Prometheus scrape config (JOURNAL 3.2).
+# The app services run on the host (via nodemon), so Prometheus (in Docker)
+# reaches them through host.docker.internal.
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: booking
+    static_configs:
+      - targets: ['host.docker.internal:3002']
+  - job_name: flights
+    static_configs:
+      - targets: ['host.docker.internal:3003']

@@ -16,7 +16,7 @@ A production-oriented, event-driven airline booking backend built with **Node.js
 | **Messages lost / poison messages** | **Durable queues + persistent messages + Dead-Letter Queue** | Survive broker restart; poison messages parked in a DLQ |
 | **Slow repeated searches** | **Redis cache-aside** + generation-counter invalidation | **p50 search latency 4.5× faster** (1523ms → 342ms) on 5k flights |
 
-Plus: **Jest unit tests + GitHub Actions CI**, `/health` probes, **structured logging with correlation-ID tracing**, and **schema validation** at the edge.
+Plus: **Jest unit tests + GitHub Actions CI**, `/health` probes, **structured logging with correlation-ID tracing**, **schema validation** at the edge, and a **Prometheus + Grafana** metrics dashboard.
 
 ## 🏛 Architecture
 
@@ -68,6 +68,8 @@ npm start   # in AuthService, FlightsAndSearchService, BookingService, ReminderS
 
 Databases: `auth_service_dev`, `booking_service_dev`, `flights_service_dev`, `reminder_service_dev`.
 Service ports: Auth `3001` · Booking `3002` · Flights `3003` · Reminder `3004` · Gateway `3006`.
+
+**Monitoring:** `docker compose up -d` also starts Prometheus (`:9090`) and Grafana (`:3000`, admin/admin) with an auto-provisioned dashboard (request rate, p95 latency, booking outcomes, cache hit ratio).
 
 ## 🧪 Tests & Benchmarks
 

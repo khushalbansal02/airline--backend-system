@@ -1,6 +1,7 @@
 const {FlightRepository,AirplaneRepository}=require('../repository/index')
 const {comparetime}=require('../utils/helper')
 const cache=require('../config/cache')
+const { cacheEvents }=require('../config/metrics')
 
 class FlightService{
 
@@ -81,7 +82,8 @@ class FlightService{
     const bypass = data && data.nocache === '1';
     if(!bypass){
       const cached = await cache.getSearch(data);
-      if(cached) return cached; // cache HIT
+      if(cached){ cacheEvents.inc({ result: 'hit' }); return cached; } // cache HIT
+      cacheEvents.inc({ result: 'miss' });
     }
     const flights = await this.flightRepository.getAllFlights(data);
     // Return plain objects so cache hits and misses have identical shape.

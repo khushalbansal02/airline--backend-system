@@ -1,4 +1,5 @@
 const { BookingService } = require('../services/index');
+const { bookingsTotal } = require('../config/metrics');
 const bookingService = new BookingService();
 
 const create = async (req, res) => {
@@ -11,6 +12,7 @@ const create = async (req, res) => {
       idempotencyKey,
       correlationId: req.correlationId,
     });
+    bookingsTotal.inc({ outcome: 'success' });
     return res.status(201).json({
       success: true,
       data: response,
@@ -18,6 +20,7 @@ const create = async (req, res) => {
       err: {},
     });
   } catch (error) {
+    bookingsTotal.inc({ outcome: 'failure' });
     // Map the AppError's statusCode (409 for no seats, 404, 400, 502…) instead
     // of returning 400 for everything (JOURNAL 0.4 / 1.2).
     const statusCode = error.statusCode || 500;

@@ -5,6 +5,7 @@ const { PORT } = require('./config/serverConfig');
 const db=require('./models/index')
 const {City,Airport,Airplane}=require('./models/index')
 const apiroutes=require('./routes/index')
+const { register, metricsMiddleware } = require('./config/metrics')
 
 const cleanupDuplicateAirplanes = async () => {
   try {
@@ -34,6 +35,12 @@ const setupAndStartServer = async () => {
     const app = express();
     app.use(bodyParser.json());
     app.use(bodyParser.urlencoded({extended: true}));
+    app.use(metricsMiddleware);
+    // Prometheus scrape endpoint (JOURNAL 3.2)
+    app.get('/metrics', async (req, res) => {
+      res.set('Content-Type', register.contentType);
+      res.end(await register.metrics());
+    });
     app.use('/api',apiroutes);
     // Liveness/readiness probe (JOURNAL 2.3)
     app.get('/health', async (req, res) => {

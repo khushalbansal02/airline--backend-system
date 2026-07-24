@@ -482,6 +482,41 @@ Invalidation verified: each flight write bumps flights:gen (0 -> 1 -> 2 ...)
 
 ---
 
+## Challenge 3.2 — No metrics or dashboards (Prometheus + Grafana) ⭐
+
+**Symptom.** After adding structured logs (Challenge 2.4) we could trace a single request, but we had **no aggregate view**: request rate, latency percentiles, error ratio, cache hit ratio, booking throughput. You can't run a system you can't see in aggregate, and you can't alert on trends you don't measure.
+
+**Why it matters.** Logs answer "what happened in *this* request"; **metrics** answer "how is the system behaving *overall*, right now and over time." Metrics are the basis of dashboards, alerting, capacity planning, and SLOs. Prometheus + Grafana is the de-facto open-source stack, and a dashboard is a concrete, visual portfolio artifact.
+
+**The concept — metrics, the RED method, and pull-based scraping.**
+- **Metric types:** *counter* (monotonic, e.g. `bookings_total`), *gauge* (up/down, e.g. memory), *histogram* (bucketed distribution → percentiles, e.g. request duration). We use all three.
+- **RED method** for request-driven services: **R**ate, **E**rrors, **D**uration — the three things to watch per endpoint. Our HTTP histogram (`http_request_duration_seconds`) gives all three via PromQL.
+- **Pull model:** Prometheus *scrapes* each service's `/metrics` endpoint on an interval (vs push). Services just expose the endpoint; Prometheus owns collection, storage, and querying (PromQL).
+- **Cardinality caution:** labels multiply time-series. We label by `service`, `route`, `status`, `outcome` — bounded sets. Never label by unbounded values (user id, booking id) or you explode Prometheus's memory.
+
+**The fix (`config/metrics.js` in booking + flights, `monitoring/`, `docker-compose.yml`):**
+- `prom-client` registry per service; default process metrics + a request-duration histogram (middleware) + business counters (`bookings_total{outcome}`, `flight_search_cache_events_total{result}`), exposed at `GET /metrics`.
+- Prometheus (`monitoring/prometheus.yml`) scrapes both services every 5s via `host.docker.internal` (services run on the host).
+- Grafana with **auto-provisioned** datasource + dashboard (`monitoring/grafana/…`): request rate, p95 latency, booking outcomes, cache hit ratio. `docker compose up -d` brings the whole stack up.
+
+**Proof (real run):**
+```
+Prometheus targets : booking UP, flights UP
+Scraped metrics    : bookings_total{outcome="success"}, flight_search_cache_events_total{result="hit|miss"}
+Grafana            : dashboard "Airline Booking System" auto-provisioned at :3000
+```
+**Insight surfaced by the metrics:** under an interleaved read/write load the cache hit ratio was low — because every seat reserve/release invalidates the whole search cache (coarse invalidation). In a real search-heavy workload (reads ≫ writes per flight set) the ratio is high; a finer design would exclude volatile seat counts from the cached search shape.
+
+**Access:** Grafana `http://localhost:3000` (admin/admin), Prometheus `http://localhost:9090`.
+
+**Interview drill.**
+- *Q: Logs vs metrics vs traces?* → Logs = discrete events (what happened here). Metrics = aggregated numeric time-series (how's the system overall). Traces = one request's path+timing across services. You need all three.
+- *Q: Push vs pull monitoring?* → Prometheus pulls (scrapes `/metrics`): simpler service code, central control of intervals, easy target health. Push (e.g. StatsD) suits short-lived jobs; Prometheus covers those with a Pushgateway.
+- *Q: Counter vs gauge vs histogram?* → Counter only goes up (rate() it); gauge goes up/down; histogram buckets values so you can compute quantiles (p95/p99) server-side.
+- *Q: What's a good SLI/SLO here?* → SLI: fraction of booking requests < 500ms and non-5xx. SLO: 99.9% over 30 days. Alert when the error budget burns too fast.
+
+---
+
 # Project summary — the whole story in one paragraph
 
 > *"I took a tutorial-grade airline booking backend and hardened it to production standards. I fixed correctness bugs (including a silent messaging failure), then solved the hard distributed-systems problems: atomic seat reservation (zero overselling, load-tested), a Saga with compensating transactions replacing an impossible cross-service ACID transaction, idempotency keys, the Transactional Outbox for crash-safe events, and an auto-expiry sweeper for orphaned holds. I added engineering rigor — unit tests + CI, durable queues with a dead-letter queue, health checks, structured logging with correlation-ID tracing, and edge validation. Finally I added a Redis cache-aside layer with generation-counter invalidation that cut search latency ~4.5×. Every change is documented with the problem, the concept, and the trade-offs."*
