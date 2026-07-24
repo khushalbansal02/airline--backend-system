@@ -41,3 +41,28 @@ UPDATE Flights SET totalSeats = totalSeats - :n
 The `WHERE totalSeats >= :n` guard and the decrement happen indivisibly, so the database serializes concurrent writers and the invariant can never be violated.
 
 > **Resume line:** *"Designed an atomic seat-reservation service; load-tested at 100 concurrent bookings on a 5-seat flight with zero overselling (vs. 95 oversold under the naive read-modify-write approach)."*
+
+---
+
+# Flight Search Benchmark — Redis cache-aside vs uncached
+
+**Test:** 3,000 requests (concurrency 50) at `GET /flights?departureAirportId=1` against a realistic **5,003-flight** dataset, comparing the Redis cache-aside path to the uncached path (`?nocache=1`, always MySQL + ORM).
+
+Reproduce:
+```bash
+mysql -u root -p flights_service_dev < loadtest/seed-bench-flights.sql   # seed ~5000 flights
+node loadtest/search-benchmark.js --n=3000 --concurrency=50
+mysql -u root -p -e "DELETE FROM flights_service_dev.Flights WHERE flightNumber LIKE 'BENCH%';"  # cleanup
+```
+
+| Path | mean | p50 | p95 | p99 |
+|---|---|---|---|---|
+| **Uncached** (MySQL + Sequelize) | 1528ms | 1523ms | 1678ms | 2583ms |
+| **Cached** (Redis) | 380ms | 342ms | 470ms | 1967ms |
+| **Speedup** | 4.0× | **4.5×** | **3.6×** | 1.3× |
+
+The uncached path pays for a table scan **plus hydrating 5,000 Sequelize model objects** on every request; the cache serves the pre-serialized result and skips all of it. Invalidation is via a generation counter (`INCR flights:gen`) bumped on every flight write, so cached results are never stale after a booking changes seat counts.
+
+> **Resume line:** *"Added a Redis cache-aside layer for flight search with generation-counter invalidation; cut p50 search latency 4.5× (1523ms → 342ms) on a 5k-flight dataset under 50 concurrent clients."*
+
+> **Note / next step:** the absolute latencies are high because the endpoint returns all matching rows unpaginated — **pagination** is the natural companion optimization (cap page size, cache per page).

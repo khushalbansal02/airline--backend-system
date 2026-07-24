@@ -1,5 +1,6 @@
 const {FlightRepository,AirplaneRepository}=require('../repository/index')
 const {comparetime}=require('../utils/helper')
+const cache=require('../config/cache')
 
 class FlightService{
 
@@ -27,6 +28,7 @@ class FlightService{
       }
       console.log(airplane);
       const flight=await this.flightRepository.createFlight({...data,totalSeats:airplane.capacity});
+      await cache.invalidateSearch(); // new flight changes search results
       return flight;
     }
     catch(error){
@@ -74,8 +76,18 @@ class FlightService{
   }
   async getAllFlightData(data){
     try{
-    const flight=await this.flightRepository.getAllFlights(data);
-    return flight;
+    // Cache-aside for the read-heavy search path (JOURNAL 3.1). `?nocache=1`
+    // bypasses the cache — used by the benchmark to compare cached vs uncached.
+    const bypass = data && data.nocache === '1';
+    if(!bypass){
+      const cached = await cache.getSearch(data);
+      if(cached) return cached; // cache HIT
+    }
+    const flights = await this.flightRepository.getAllFlights(data);
+    // Return plain objects so cache hits and misses have identical shape.
+    const plain = (flights || []).map((f)=>f.toJSON());
+    if(!bypass) await cache.setSearch(data, plain);
+    return plain;
     }
     catch(error){
       console.log("something went wrong at the flight service layer");
@@ -86,8 +98,7 @@ class FlightService{
   async updateFlight(flightId,data){
     try{
       const response= await this.flightRepository.updateFlight(flightId,data);
-      console.log(flightId,data);
-      console.log(response);
+      await cache.invalidateSearch(); // flight fields changed
       return response;
     }
     catch(error){
@@ -100,7 +111,9 @@ class FlightService{
   // seats remain. Used by the BookingService saga (JOURNAL 1.1 / 1.2).
   async reserveSeats(flightId, seats){
     try{
-      return await this.flightRepository.reserveSeats(flightId, seats);
+      const reserved = await this.flightRepository.reserveSeats(flightId, seats);
+      if(reserved) await cache.invalidateSearch(); // seat count changed
+      return reserved;
     }
     catch(error){
       console.log("something went wrong reserving seats at the service layer");
@@ -111,7 +124,9 @@ class FlightService{
   // Compensating action: release previously reserved seats.
   async releaseSeats(flightId, seats){
     try{
-      return await this.flightRepository.releaseSeats(flightId, seats);
+      const released = await this.flightRepository.releaseSeats(flightId, seats);
+      if(released) await cache.invalidateSearch(); // seat count changed
+      return released;
     }
     catch(error){
       console.log("something went wrong releasing seats at the service layer");

@@ -446,4 +446,42 @@ DLQ path   : publish non-JSON to airline_events/reminder_key
 
 > *"I brought it up to production hygiene: Jest unit tests with a dependency-injected saga and GitHub Actions CI; durable queues with persistent messages and a dead-letter queue for poison messages; health/readiness probes; structured JSON logging with correlation IDs that trace a request across services; and schema validation at the edge. So the system isn't just correct — it's tested, observable, resilient, and safe to change."*
 
-*Tier 3 (the X-factor differentiator) is appended next.*
+# Tier 3 — The X-factor
+
+## Challenge 3.1 — Slow repeated searches (Redis cache-aside + invalidation) ⭐
+
+**Symptom.** Flight search (`GET /flights`) hit MySQL and hydrated every matching row into a Sequelize model on **every request**, even though the same popular searches repeat constantly and the underlying data changes rarely. On a realistic 5,000-flight dataset this measured **~1,523ms p50** under load.
+
+**Why it matters.** Search is the most-hit, most read-heavy endpoint in a booking system, and it's dominated by repeated identical queries. Caching is *the* lever for read scalability, and **cache invalidation** is famously one of the two hard problems in computer science — being able to say "I cached it *and* kept it correct" is a strong signal.
+
+**The concept — cache-aside, TTL, and invalidation.**
+- **Cache-aside (lazy loading):** on read, check the cache; on a **miss**, read the DB and populate the cache; on a **hit**, skip the DB entirely. The app owns the cache (vs read-through where the cache library does).
+- **TTL** bounds staleness even if invalidation is missed — a safety net, not the primary correctness mechanism.
+- **Invalidation is the hard part.** A booking changes a flight's seat count, so cached search results must not go stale. Naively deleting every affected search key is O(n) and error-prone. We use a **generation counter**: every search key is suffixed `:v<gen>`, and any flight write does `INCR flights:gen`. All previously-cached keys instantly become unreachable (and TTL-expire) — **O(1) invalidation of the entire search namespace**. This is cache "versioning."
+- **Graceful degradation:** if Redis is down, every cache function returns null/no-ops and the service serves straight from the DB. The cache is an optimization, never a dependency.
+
+**The fix (`config/cache.js`, `flight-service.js`):**
+- `getAllFlightData` is cache-aside: hash the query → look up `flights:search:<hash>:v<gen>` → return on hit, else DB + populate. `?nocache=1` bypasses it (for benchmarking).
+- Every write path — create flight, update flight, reserve seats, release seats — calls `invalidateSearch()` (`INCR flights:gen`).
+- Config via `REDIS_URL`, `CACHE_ENABLED`, `CACHE_TTL_SECONDS`. Redis added to `docker-compose.yml`.
+
+**Proof (real benchmark, 5,003 flights, 3,000 requests @ concurrency 50):**
+```
+UNCACHED (MySQL+ORM) : p50 1523ms  p95 1678ms
+CACHED   (Redis)     : p50  342ms  p95  470ms
+Speedup              : p50 4.5x     p95 3.6x
+Invalidation verified: each flight write bumps flights:gen (0 -> 1 -> 2 ...)
+```
+
+**Interview drill.**
+- *Q: Cache-aside vs read-through vs write-through vs write-behind?* → Aside: app checks cache then DB (lazy). Read-through: cache fetches from DB on miss. Write-through: writes go to cache+DB synchronously (consistent, slower writes). Write-behind: write to cache, flush to DB async (fast, risk of loss). We used aside — simple and the standard default.
+- *Q: How do you invalidate?* → TTL for bounded staleness + explicit invalidation on writes. We used a generation counter for O(1) namespace-wide invalidation instead of scanning/deleting keys.
+- *Q: What's the cache stampede / thundering herd problem?* → When a hot key expires, many requests miss simultaneously and all hit the DB. Mitigations: a short lock/single-flight so one request repopulates, or staggered/soft TTLs.
+- *Q: How do you keep the cache consistent with the DB?* → Invalidate (or update) on every write; accept eventual consistency within the TTL; for strict needs use write-through. Know that "cache invalidation is hard" and design for graceful staleness.
+- *Q: Why not just cache `getFlight` by id too?* → Seat counts change on every booking, so a per-flight cache would need invalidation on every reserve/release (high churn) or a very short TTL. We cache the *search* (less volatile shape) and invalidate on writes; the authoritative seat check stays the atomic UPDATE (Challenge 1.1).
+
+---
+
+# Project summary — the whole story in one paragraph
+
+> *"I took a tutorial-grade airline booking backend and hardened it to production standards. I fixed correctness bugs (including a silent messaging failure), then solved the hard distributed-systems problems: atomic seat reservation (zero overselling, load-tested), a Saga with compensating transactions replacing an impossible cross-service ACID transaction, idempotency keys, the Transactional Outbox for crash-safe events, and an auto-expiry sweeper for orphaned holds. I added engineering rigor — unit tests + CI, durable queues with a dead-letter queue, health checks, structured logging with correlation-ID tracing, and edge validation. Finally I added a Redis cache-aside layer with generation-counter invalidation that cut search latency ~4.5×. Every change is documented with the problem, the concept, and the trade-offs."*
