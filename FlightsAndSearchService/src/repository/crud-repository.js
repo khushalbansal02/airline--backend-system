@@ -41,6 +41,7 @@ class crudRepository{
   async get(modelId){
     try {
       const result=await this.model.findByPk(modelId);
+      return result; // was missing — the fetched row was silently discarded
     } catch (error) {
         console.log(error);
       throw error;

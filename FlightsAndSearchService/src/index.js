@@ -37,7 +37,9 @@ const setupAndStartServer = async () => {
     app.use('/api',apiroutes);
 
     try {
-      if(process.env.SYNC_DB==1){
+      // Standardized on DB_SYNC across all services; opt-in, dev-only (JOURNAL 0.5)
+      if(process.env.DB_SYNC === 'true'){
+        console.warn('DB_SYNC=true: altering schema from models. Do NOT use in production.');
         await cleanupDuplicateAirplanes();
         await db.sequelize.sync({alter:true});
       }

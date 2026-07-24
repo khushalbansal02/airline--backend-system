@@ -15,6 +15,9 @@ router.post('/airplanes', FlightController.createAirplane)
 router.patch('/airplanes/:id', FlightController.updateAirplane)
 router.get('/flights/:id',FlightController.getflight);
 router.get('/flights',FlightController.getAll);
+// Atomic seat inventory operations used by the BookingService saga (JOURNAL 1.1)
+router.post('/flights/:id/seats/reserve',FlightController.reserveSeats);
+router.post('/flights/:id/seats/release',FlightController.releaseSeats);
 router.post('/airports', AirportController.create)
 // router.post('/cities',CityController.creates);
 module.exports = router;

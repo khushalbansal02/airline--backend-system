@@ -1,0 +1,178 @@
+# Engineering Journal — Airline Booking System
+
+> **Purpose of this document.** This is not a changelog. It's a record of the *engineering problems* we found in this system and how we reasoned about them. Every entry is written so that if an interviewer points at any part of this project and asks "why did you do it this way?", you can answer with the problem, the concept, the trade-off, and the fix.
+>
+> Read it top to bottom and you'll understand how real backend systems handle **consistency, concurrency, failure, and scale** — the exact things that separate a "vibe-coded CRUD app" from an engineer's project.
+
+## How to use this doc for interviews
+
+Each challenge follows the same five-part structure:
+
+1. **Symptom** — what we observed / what was wrong.
+2. **Why it matters** — the real-world impact (money lost, data corrupted, users angry).
+3. **The concept** — the computer-science / system-design idea behind it. *This is what interviewers actually test.*
+4. **The fix** — what we changed and why.
+5. **Interview drill** — the questions you'll get, with answer sketches.
+
+---
+
+# Tier 0 — Correctness
+
+> Before we can talk about "scale" or "distributed systems," the code has to be *correct*. Tier 0 is the unglamorous but essential layer: bugs that would fail a code review in the first five minutes. Getting these right is the difference between "below SDE1" and "solid SDE1."
+
+## Challenge 0.1 — The event system was silently broken (exchange-name mismatch)
+
+**Symptom.** BookingService publishes booking events to a RabbitMQ exchange named `airline_exchange` (from `BookingService/.env`), but ReminderService subscribes on an exchange named `airline` (from `ReminderService/.env`). They are two *different* exchanges. Every booking "succeeded," yet **no confirmation email was ever delivered**, and nothing errored — the message just vanished into an exchange nobody was listening to.
+
+**Why it matters.** This is the most dangerous class of bug: a **silent failure**. There's no crash, no red log line. In production this looks like "sometimes customers don't get their tickets" — the kind of bug that takes days to trace because everything *appears* healthy. A distributed system is only as correct as the contracts between its parts, and a topic/exchange name *is* a contract.
+
+**The concept — Message brokers & the publish/subscribe contract.**
+- A **message broker** (RabbitMQ here) decouples the *producer* (BookingService) from the *consumer* (ReminderService). The producer doesn't call the consumer directly; it drops a message and moves on. This is how you get resilience (consumer can be down and catch up later) and scalability (add more consumers).
+- In RabbitMQ the flow is: **Producer → Exchange → (routing/binding key) → Queue → Consumer.** The *exchange name* and the *binding key* are the address. If the producer and consumer disagree on either, the message is routed into the void.
+- Our system also had the exchange declared as **non-durable** and messages as non-persistent — a second, related bug we fix in Tier 2 (a broker restart would drop all in-flight messages).
+
+**The fix.** Standardized both services to the same exchange name and binding key via shared, validated config. A mismatch like this should be *impossible to introduce silently* — so config is now centralized and asserted at startup.
+
+**Interview drill.**
+- *Q: What's the difference between an exchange and a queue in RabbitMQ?* → An exchange receives messages from producers and routes them to queues based on binding keys and exchange type (direct/topic/fanout/headers). Consumers read from queues. Producers never write to queues directly.
+- *Q: Why use a message queue instead of just calling the email service over HTTP?* → Decoupling and resilience: the booking succeeds even if the email service is down; the message waits in the queue. Also load-leveling (absorb spikes) and the ability to fan out one event to many consumers.
+- *Q: How would you have caught this bug earlier?* → An integration/contract test that publishes and asserts the consumer received it; startup assertions that fail loudly on config mismatch; end-to-end tracing with correlation IDs.
+
+## Challenge 0.2 — A database write that was never awaited (lost updates)
+
+**Symptom.** In `FlightsAndSearchService/src/repository/flight-repository.js`, `updateFlight` called `Flights.update(...)` **without `await`**, then immediately `return true`. Sequelize's `update` returns a Promise; without awaiting it, the function reports success *before the database has confirmed the write* — and if the write fails, nobody ever finds out.
+
+**Why it matters.** This is on the **seat-decrement path**. The booking service asks the flight service to reduce available seats. If that write silently fails but returns `true`, seats get "sold" in the booking DB but never deducted from inventory → **overselling**. Un-awaited async writes are a classic source of "works on my machine, corrupts data in production" bugs, because the race only shows up under load.
+
+**The concept — Promises, the event loop, and "fire-and-forget" hazards.**
+- Node.js is single-threaded with an **event loop**. Async I/O (DB calls, HTTP) returns a Promise immediately and completes later. `await` is what makes your function *wait* for the real result and *propagate errors*.
+- A missing `await` = **fire-and-forget**: you lose both the result and the error. Errors become **unhandled promise rejections**, which can even crash the process on modern Node.
+- Rule of thumb: every async call that has a side effect you depend on must be awaited (or explicitly, deliberately not — with a comment saying why).
+
+**The fix.** Awaited the update and returned the actual affected-row count so callers can detect "updated 0 rows" (which itself signals a concurrency/existence problem).
+
+**Interview drill.**
+- *Q: What happens if you don't await a Promise in Node?* → The function continues before the operation finishes; the result is lost; a rejection becomes an unhandled rejection. No backpressure, no error handling.
+- *Q: Node is single-threaded — how does it handle thousands of concurrent requests?* → Non-blocking I/O + the event loop. While one request waits on I/O, the loop serves others. CPU-bound work still blocks, which is why you offload it (worker threads, separate services).
+
+## Challenge 0.3 — Silent `catch` blocks that swallow errors
+
+**Symptom.** `BookingService/.../booking-repository.js`'s `updateBooking` had `catch(error){ }` — an empty catch. Any failure (DB down, row missing, constraint violation) was swallowed; the function returned `undefined` and the caller assumed success. Similar "log and continue" patterns existed elsewhere.
+
+**Why it matters.** **Swallowing errors turns a loud, debuggable failure into a silent, undebuggable one.** The booking flow would commit a transaction believing the status update succeeded when it may not have. Error handling isn't about *hiding* errors — it's about *deciding* what to do with them (retry, compensate, propagate, alert).
+
+**The concept — Error propagation & the "fail loud, fail fast" principle.**
+- Errors should propagate to a layer that can *meaningfully handle* them. A repository can't decide the business response to "DB is down" — the service or controller can. So repositories should re-throw, not swallow.
+- Distinguish **expected** errors (validation, "not found" → return a clean 4xx) from **unexpected** ones (bugs, outages → 5xx, alert, don't leak internals).
+
+**The fix.** Empty catches now re-throw (or are removed so errors propagate naturally). A centralized error handler formats the client response.
+
+**Interview drill.**
+- *Q: When is it OK to catch and not re-throw?* → When *this* layer is the right place to handle it: you have a fallback, a compensating action, or you're translating a low-level error into a domain error. Never just to make a red line disappear.
+
+## Challenge 0.4 — HTTP status codes that lie
+
+**Symptom.** `FlightsAndSearchService/.../flight-controller.js`'s `getAll` returned **HTTP 500** on the *success* path. Other handlers returned 400/404/500 somewhat arbitrarily and stuffed raw error objects into responses.
+
+**Why it matters.** Status codes are the **API's contract with every client, proxy, load balancer, and monitoring tool.** A `500` means "server broke" — it triggers alerts, retries, and circuit breakers. Returning 500 on success means your dashboards scream while everything's fine, and real failures hide in the noise. Clients (and the API Gateway) can't tell success from failure.
+
+**The concept — HTTP semantics as a contract.**
+- `2xx` success, `4xx` client's fault (don't retry blindly — fix the request), `5xx` server's fault (safe-ish to retry). Monitoring, retries, and caching all key off these.
+- Also: never leak raw stack traces / DB errors to clients — that's an information-disclosure security issue *and* a bad contract.
+
+**The fix.** Correct codes throughout: 200/201 success, 400 validation, 404 not found, 409 conflict (used later for concurrency), 500 only for genuine server faults. Standardized response envelope.
+
+**Interview drill.**
+- *Q: 401 vs 403?* → 401 = not authenticated (who are you?). 403 = authenticated but not allowed (I know you, you can't do this).
+- *Q: When do you return 409?* → Conflict with current resource state — e.g. optimistic-lock version mismatch, or trying to book a seat that was just taken. (Foreshadows Tier 1.)
+
+## Challenge 0.5 — Auto-`sync({alter})` on every boot + a silent typo
+
+**Symptom.** AuthService ran `db.sequelize.sync({alert:true})` on startup — note the typo `alert` (not `alter`), so the intended behavior didn't even happen. FlightsService ran `sync({alter:true})` on every boot gated by an inconsistent env var (`SYNC_DB` vs `DB_SYNC` elsewhere).
+
+**Why it matters.** `sequelize.sync({alter:true})` inspects your models and **automatically mutates the live database schema** to match. On a production database this is genuinely dangerous — it can drop columns, change types, and lock tables, with no review and no rollback. Schema changes must be **explicit, versioned, and reviewable**. That's what migrations are for (and this project *already has* a `migrations/` folder — the auto-sync was undermining it).
+
+**The concept — Schema migrations vs auto-sync.**
+- **Migrations** are versioned, ordered scripts (`up`/`down`) checked into git. They give you a reviewable history, safe rollbacks, and identical schema across dev/staging/prod. This is how every serious team manages schema.
+- **Auto-sync** is a dev convenience that guesses the diff. Fine for a quick local spike; a foot-gun in prod.
+
+**The fix.** Auto-sync is now off by default and only opt-in via one consistent env flag for local dev; the source of truth is migrations. Env var name standardized.
+
+**Interview drill.**
+- *Q: How do you evolve a database schema without downtime?* → Migrations, applied in a backward-compatible sequence: add nullable column → backfill → start writing → make non-null → remove old column in a later deploy (expand/contract pattern).
+
+## Challenge 0.6 — Hardcoded service URLs & unusable rate limit
+
+**Symptom.** `booking-service.js` hardcoded `http://localhost:3001/api/v1/user/...` for the auth lookup. The API Gateway's rate limit was **5 requests per 2 minutes** — low enough to lock out a single real user.
+
+**Why it matters.** Hardcoded `localhost` URLs mean the system **only runs on your laptop** — it can't be containerized, deployed, or scaled, because in real environments services find each other by DNS/service-discovery names, not `localhost:port`. And a broken rate limit is a self-inflicted denial of service.
+
+**The concept — Configuration & the 12-Factor App.**
+- **Config lives in the environment, not the code** (12-Factor principle III). The same build artifact should run in dev/staging/prod by changing env vars only.
+- **Service discovery**: services address each other by logical names resolved at runtime (env, DNS, Consul, Kubernetes services), so you can move/scale them freely.
+- **Rate limiting** protects against abuse and cascading overload — but the limit must reflect real usage.
+
+**The fix.** All service URLs moved to env/config. Rate limit set to a sane production-ish value, ready to become per-user later.
+
+**Interview drill.**
+- *Q: Why not hardcode config?* → Same artifact across environments, secrets stay out of source, no rebuild to reconfigure, and it's testable.
+- *Q: How do services find each other in production?* → Service discovery (DNS-based in Kubernetes, or a registry like Consul/Eureka), usually behind a load balancer.
+
+## Challenge 0.7 — Dead code, misleading comments, and unprofessional strings
+
+**Symptom.** Large commented-out blocks in most files, and user-facing error strings like `"tumse na ho payi"` and `"something went wrong"`.
+
+**Why it matters.** This is the **signal layer** of a resume project. A reviewer skims for professionalism before depth. Dead code and joke strings read as "unfinished tutorial." Clean, intentional code reads as "engineer." Cheap to fix, disproportionate payoff.
+
+**The fix.** Removed dead code (git history preserves it if ever needed — that's what version control is *for*). Replaced all error strings with clear, professional messages.
+
+---
+
+# Tier 1 — Concurrency, Consistency & Distributed Transactions
+
+> This is the tier that makes the project an SDE2-signal. Tier 0 made the code *correct in isolation*. Tier 1 makes it correct *under concurrency and partial failure* — the two things that define distributed systems.
+
+## Challenge 1.1 — Overselling seats (the lost-update race) ⭐ flagship
+
+**Symptom.** The booking flow decremented seats with a **read-modify-write across two services**: BookingService did `GET /flights/:id` to read `totalSeats`, subtracted in JavaScript, then `PATCH /flights/:id` to write the new value. Under concurrency this loses updates. We *proved* it: 100 simultaneous bookings on a 5-seat flight → **100 succeeded, 95 seats oversold** (see `loadtest/RESULTS.md`).
+
+**Why it matters.** Overselling is a real airline's worst operational nightmare — passengers with valid tickets and no seat, compensation payouts, brand damage. This exact race (inventory, wallet balances, stock counts, rate limits) is *the* most common concurrency question in system-design and backend interviews. Being able to say "I hit this, proved it with a load test, and fixed it three different ways" is gold.
+
+**The concept — Race conditions, lost updates & concurrency control.**
+
+A *race condition* is when correctness depends on the timing/interleaving of concurrent operations. The specific one here is a **lost update**:
+
+```
+Time  Request A                    Request B
+ t1   read totalSeats = 2
+ t2                                read totalSeats = 2
+ t3   write 2 - 1 = 1
+ t4                                write 2 - 1 = 1   ← A's decrement is lost
+```
+
+Both booked, but the count only dropped by 1. There are three standard ways to prevent it:
+
+| Approach | How it works | Trade-off | When to use |
+|---|---|---|---|
+| **Atomic conditional write** (what we used) | One SQL statement: `UPDATE … SET seats = seats - n WHERE seats >= n`. The read-check and the write are indivisible; the DB serializes writers to the same row. | Simplest, fastest, no retries, no explicit locks. Only works when the operation *is* expressible as one statement (counters, flags). | Inventory counters, balances — our exact case. |
+| **Pessimistic locking** | `SELECT … FOR UPDATE` inside a transaction locks the row; other txns *wait* until you commit. | Bulletproof, but holds a lock → lower throughput and risk of deadlocks under heavy contention. | Complex read-modify-write you can't express in one statement; low-contention critical sections. |
+| **Optimistic locking** | Add a `version` column. Read it, and on write do `UPDATE … WHERE version = :v` then `version = v+1`. If 0 rows updated, someone else changed it → **409 Conflict**, retry. | No locks held → high throughput; but you must handle retries and conflicts. | High-read, low-conflict workloads; Sequelize/JPA/Hibernate support it natively (`version: true`). |
+
+We chose the **atomic conditional write** because seat inventory *is* a counter — it's the simplest tool that fully solves the problem, needs no retries, and has the lowest latency. The other two are documented here because interviewers love the comparison.
+
+**The fix.** A dedicated, atomic reservation API in the FlightService:
+- `reserveSeats` → `UPDATE Flights SET totalSeats = totalSeats - n WHERE id = ? AND totalSeats >= n`. Returns whether exactly one row changed. (`flight-repository.js`)
+- Exposed as `POST /flights/:id/seats/reserve` → **409** when seats are unavailable, and `POST /flights/:id/seats/release` as the Saga's compensating action.
+- The BookingService now calls this instead of doing its own read-modify-write.
+
+**Proof.** `loadtest/seat-concurrency-test.js` runs both modes; `loadtest/RESULTS.md` captures the before/after. Zero overselling under the fix.
+
+**Interview drill.**
+- *Q: Walk me through how two users booking the last seat can both succeed.* → The lost-update sequence above. Fix: make the check-and-decrement atomic (single conditional UPDATE / row lock / version check).
+- *Q: Optimistic vs pessimistic locking — when would you pick each?* → Optimistic when conflicts are rare and throughput matters (retry on the rare clash). Pessimistic when conflicts are common or the critical section is complex and a retry would be expensive/incorrect.
+- *Q: Your atomic UPDATE works on one row. What if inventory were sharded across rows/nodes?* → Now you need distributed coordination: a distributed lock (Redis Redlock), a single-writer partition per flight, or a consensus/serializable-isolation store. Good segue into partitioning.
+- *Q: Does database isolation level matter here?* → For the single atomic UPDATE, no — the statement is atomic at any isolation level. For the SELECT-FOR-UPDATE approach, you need at least READ COMMITTED and an explicit transaction. For multi-statement invariants, you'd consider REPEATABLE READ / SERIALIZABLE.
+
+---
+
+*Challenges 1.2 (Saga + Outbox), 1.3 (Idempotency), 1.4 (Auto-expiry), and Tiers 2–3 are appended as we build them.*

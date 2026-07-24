@@ -95,6 +95,29 @@ class FlightService{
       throw error;
     }
   }
+
+  // Atomically reserve seats. Returns true if reserved, false if not enough
+  // seats remain. Used by the BookingService saga (JOURNAL 1.1 / 1.2).
+  async reserveSeats(flightId, seats){
+    try{
+      return await this.flightRepository.reserveSeats(flightId, seats);
+    }
+    catch(error){
+      console.log("something went wrong reserving seats at the service layer");
+      throw error;
+    }
+  }
+
+  // Compensating action: release previously reserved seats.
+  async releaseSeats(flightId, seats){
+    try{
+      return await this.flightRepository.releaseSeats(flightId, seats);
+    }
+    catch(error){
+      console.log("something went wrong releasing seats at the service layer");
+      throw error;
+    }
+  }
   
   
 

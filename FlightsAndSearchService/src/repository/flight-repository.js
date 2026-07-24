@@ -97,15 +97,62 @@ class FlightRepository{
 
   async updateFlight(flightId,data){
     try {
-      Flights.update(data,{where:{
-        id:flightId,
-      }});
-      return true;
+      // Must await: without it we report success before the DB confirms the
+      // write, and any failure becomes an unhandled rejection (JOURNAL 0.2).
+      // Return the affected-row count so callers can detect "updated 0 rows".
+      const [affectedRows] = await Flights.update(data, {
+        where: { id: flightId },
+      });
+      return affectedRows;
     } catch (error) {
-      
-      console.log("something went wrong at the repolayer");
+      console.log("something went wrong at the flight repository layer");
       throw error;
+    }
+  }
 
+  // ── Concurrency-safe seat inventory (JOURNAL 1.1) ────────────────────────
+  // The overselling bug came from read-modify-write across two services:
+  //   read totalSeats -> subtract in app code -> write back.
+  // Two concurrent bookings both read the same value and both write, losing
+  // one update. The fix is a SINGLE atomic SQL statement whose WHERE clause
+  // guards the invariant, so the DATABASE serializes concurrent writers and
+  // the "not enough seats" check and the decrement happen indivisibly.
+  async reserveSeats(flightId, seats){
+    try {
+      const n = Number(seats);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw { error: 'seats must be a positive integer' };
+      }
+      // UPDATE Flights SET totalSeats = totalSeats - n
+      //   WHERE id = flightId AND totalSeats >= n
+      // affectedRows === 1 -> we won and reserved; 0 -> not enough seats
+      // (or a concurrent booking took them). No row can ever go negative.
+      const [affectedRows] = await Flights.update(
+        { totalSeats: Flights.sequelize.literal(`totalSeats - ${n}`) },
+        { where: { id: flightId, totalSeats: { [Op.gte]: n } } }
+      );
+      return affectedRows === 1;
+    } catch (error) {
+      console.log("something went wrong reserving seats at the repository layer");
+      throw error;
+    }
+  }
+
+  // Compensating action for the Saga: give the seats back atomically.
+  async releaseSeats(flightId, seats){
+    try {
+      const n = Number(seats);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw { error: 'seats must be a positive integer' };
+      }
+      const [affectedRows] = await Flights.update(
+        { totalSeats: Flights.sequelize.literal(`totalSeats + ${n}`) },
+        { where: { id: flightId } }
+      );
+      return affectedRows === 1;
+    } catch (error) {
+      console.log("something went wrong releasing seats at the repository layer");
+      throw error;
     }
   }
 

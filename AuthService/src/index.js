@@ -10,9 +10,12 @@ const prepareAndStartServer=()=>{
   app.use('/api',apiroutes);
 app.listen(PORT,()=>{
   console.log(`server started on ${PORT}` );
-  if(!process.env.DB_SYNC){
-
-db.sequelize.sync({alert:true})
+  // Schema is managed by migrations (the source of truth). Auto-sync is a
+  // dev-only convenience, off by default, and must be opted into explicitly.
+  // Was `sync({alert:true})` — a typo that silently did nothing (JOURNAL 0.5).
+  if(process.env.DB_SYNC === 'true'){
+    console.warn('DB_SYNC=true: altering schema from models. Do NOT use in production.');
+    db.sequelize.sync({alter:true});
   }
 })
 }

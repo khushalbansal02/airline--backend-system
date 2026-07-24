@@ -13,10 +13,11 @@ app.use('/api',apiRoutes);
   
 app.listen(PORT,async ()=>{
   console.log(`Server Started at ${PORT}`)
-    if(!process.env.DB_SYNC){
+    // Migrations are the source of truth; auto-sync is opt-in dev-only (JOURNAL 0.5)
+    if(process.env.DB_SYNC === 'true'){
+      console.warn('DB_SYNC=true: altering schema from models. Do NOT use in production.');
       db.sequelize.sync({alter:true});
     }
-  
-  }) 
+  })
 }
 setUpAndStartServer()

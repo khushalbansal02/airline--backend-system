@@ -5,15 +5,22 @@ const axios= require('axios')
 const {rateLimit}= require('express-rate-limit')
 const {createProxyMiddleware}= require('http-proxy-middleware')
 const PORT=3006
-const limiter = rateLimit({ 
-	windowMs: 2 * 60 * 1000, // 15 minutes
-	limit: 5, // Limit each IP to 100 requests per `window` (here, per 15 minutes).
+// Rate limit: 100 requests per IP per 15-minute window. The previous value
+// (5 per 2 minutes) was low enough to lock out a single real user (JOURNAL 0.6).
+const limiter = rateLimit({
+	windowMs: 15 * 60 * 1000, // 15 minutes
+	limit: 100,
+	standardHeaders: true,
+	legacyHeaders: false,
 })
 
 app.use(morgan("combined"));
     
 
 app.use(limiter)
+
+
+
 app.use('/bookingservice',async (req,res,next)=>{
   console.log(req.headers['x-access-token']);
   try{
