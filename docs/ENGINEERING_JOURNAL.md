@@ -344,4 +344,39 @@ Booking #12 → status=Cancelled, seatsReserved=0
 
 ---
 
-*Challenges 2.2 (durable queues + DLQ), 2.3 (health checks), 2.4 (structured logging), 2.5 (validation), and Tier 3 are appended as we build them.*
+## Challenge 2.2 — Messages lost on restart & poison messages (Durable queues + DLQ)
+
+**Symptom.** Two reliability holes in the messaging layer:
+1. The exchange was declared **non-durable** (`assertExchange(name, 'direct', false)`) and messages weren't persistent — a RabbitMQ restart **silently discarded** every in-flight message.
+2. The consumer did `service(data); channel.ack(msg)` with **no error handling** and acked unconditionally. A message that failed processing (or wasn't valid JSON) was either **lost** (acked anyway) or, if it threw before ack, could be **redelivered forever** — a "poison message" that jams the queue.
+
+**Why it matters.** The whole point of the Outbox (Challenge 1.4) is to never lose an event — but that guarantee ends the moment the broker drops it. Durability has to be **end to end**: durable exchange + durable queue + persistent message. And every real consumer eventually meets a message it can't process; without a **dead-letter queue**, that message either poisons the queue or vanishes. This is standard production messaging hygiene.
+
+**The concept — Durability, acknowledgements & dead-lettering.**
+- **Durable + persistent:** a durable exchange/queue survives a broker restart; a persistent message is written to disk. You need *all three* — a persistent message in a non-durable queue still dies with the queue.
+- **Manual acks:** ack **only after** the work succeeds. If the consumer crashes mid-work, the message was never acked, so the broker redelivers it (at-least-once). Auto-ack (or acking before the work) means a crash loses the message.
+- **Dead-Letter Queue (DLQ):** configure the main queue with a `deadLetterExchange`. On `nack(requeue=false)` (or TTL expiry / queue overflow), the broker routes the message to the DLX → DLQ instead of dropping or redelivering it. The DLQ is a parking lot for humans to inspect, fix, and replay.
+- **prefetch(1):** limits unacked messages per consumer to 1 → fair dispatch and natural backpressure instead of one worker hoarding the queue.
+
+**The fix (`messageQueue.js` in Booking + Reminder):**
+- Durable direct exchange `airline_events`; all publishes use `{ persistent: true }`.
+- Durable `reminder_queue` with `deadLetterExchange` → durable fanout `airline_events.dlx` → durable `reminder_dlq`.
+- Consumer parses + `await service(data)` and **acks only on success**; on any error, `nack(msg, false, false)` dead-letters it. `prefetch(1)` for fair delivery.
+
+**Proof (real runs):**
+```
+Happy path : booking -> outbox relay -> airline_events -> reminder_queue -> NotificationTicket #28
+DLQ path   : publish non-JSON to airline_events/reminder_key
+             -> consumer fails to parse -> nack(no requeue)
+             -> reminder_dlq depth 0 -> 1, reminder_queue stays 0 (no loss, no crash-loop)
+```
+
+**Interview drill.**
+- *Q: What does it take to not lose a message across a broker restart?* → Durable exchange **and** durable queue **and** persistent message — all three. Plus publisher confirms if you need to be sure the broker accepted it.
+- *Q: Auto-ack vs manual ack?* → Manual ack after successful processing gives at-least-once (crash → redelivery). Auto-ack gives at-most-once (crash → loss). Choose based on whether loss or duplication is worse; here we want no loss, so manual ack + idempotent consumers.
+- *Q: What's a poison message and how do you handle it?* → A message that always fails processing. Without handling it requeues forever or is dropped. Solution: nack-without-requeue to a DLQ (optionally after N retries), then alert/inspect/replay.
+- *Q: How would you add retries before dead-lettering?* → A retry queue with a message TTL that dead-letters *back* to the main queue (delayed retry), plus a retry-count header; after N attempts, route to the terminal DLQ.
+
+---
+
+*Challenges 2.3 (health checks), 2.4 (structured logging), 2.5 (validation), and Tier 3 are appended as we build them.*
