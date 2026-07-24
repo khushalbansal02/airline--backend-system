@@ -278,4 +278,40 @@ The event survived as a committed DB row *before* it was ever published, then fl
 
 ---
 
-*Challenge 1.5 (Auto-expiry) and Tiers 2–3 are appended as we build them.*
+## Challenge 1.5 — Orphaned seat holds (Auto-expiry sweeper)
+
+**Symptom.** A booking is created `InProcess` and only becomes `Booked` when the saga finishes. But if the BookingService process **crashes mid-saga** — after reserving seats (step 2) but before confirming (step 3) — the compensation stack dies with the process and never runs. The result: an `InProcess` booking that holds seats **forever**. A slow, invisible seat leak that shrinks sellable inventory over time.
+
+**Why it matters.** This is the failure mode the saga's in-process compensation *can't* cover, because the compensator itself died. Every real hold-based system (airline seats, event tickets, e-commerce carts) needs a **timeout + reaper** for holds. It's also a great demonstration that you think about *crash* failures, not just logical ones.
+
+**The concept — Leases/TTLs and reaper jobs.**
+- Treat a reservation as a **lease with a TTL**, not a permanent grab. If it isn't confirmed within the TTL, it's presumed abandoned and reclaimed.
+- A periodic **reaper/sweeper** job scans for expired leases and runs the compensation out-of-band. This is *self-healing*: the system converges back to a consistent state without human intervention.
+- **The correctness subtlety:** the sweeper must release seats **only for holds that actually reserved them**. A booking that crashed *before* step 2 is `InProcess` too, but releasing seats it never took would wrongly inflate inventory. We track this with a `seatsReserved` flag set the moment step 2 succeeds — so the sweeper knows the difference.
+- Sweeper actions must be **idempotent / safe to retry** (it runs forever on a timer), and it filters on `status = InProcess` so a cancelled hold is never reclaimed twice.
+
+**The fix (`booking-sweeper.js`, `booking-repository.js`, migration + model):**
+1. Added `seatsReserved` boolean to `Bookings`; the saga sets it `true` right after a successful reservation.
+2. `findExpiredHolds(cutoff)` returns `InProcess` bookings older than the hold TTL.
+3. Sweeper runs every 60s: for each expired hold, release seats **iff `seatsReserved`**, then mark `Cancelled`. Configurable via `BOOKING_HOLD_TTL_MINUTES` (default 15).
+
+**Proof (real run):**
+```
+Orphaned hold #12: InProcess, seatsReserved=1, holding 5 seats
+sweeper → release 5 seats, mark Cancelled
+Flight seats 339 → 344 (exactly the 5 reclaimed)
+Booking #12 → status=Cancelled, seatsReserved=0
+```
+
+**Interview drill.**
+- *Q: Your saga compensates on failure — why also need a sweeper?* → In-process compensation can't run if the *process itself* crashes. The sweeper is the out-of-band safety net for crash failures; together they make the system self-healing.
+- *Q: How do you avoid releasing seats twice?* → Idempotent design: filter on `InProcess` (cancelled holds drop out), track `seatsReserved` so we only release real holds, and once cancelled the row won't be picked up again.
+- *Q: Why not just use a DB TTL / expire column?* → You can (e.g. an `expiresAt` and a job/CDC), but you still need the *action* (releasing remote seats) which a raw DB TTL can't perform — hence a job. At scale, a delay queue (RabbitMQ TTL + dead-letter, or a scheduler) can trigger per-hold expiry instead of polling.
+
+---
+
+# Tier 1 summary — what to say in an interview
+
+> *"I took a naive booking flow and made it correct under concurrency and partial failure: atomic seat reservation (no overselling, load-tested), a Saga with compensating transactions to replace an impossible cross-service ACID transaction, idempotency keys for safe retries, the Transactional Outbox so events survive crashes, and an auto-expiry sweeper that reclaims orphaned holds. Together these give at-least-once delivery with idempotent, self-healing, eventually-consistent processing."*
+
+*Tiers 2–3 (tests, CI, observability, resilience, and the X-factor) are appended as we build them.*

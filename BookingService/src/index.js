@@ -5,6 +5,8 @@ const bodyParser=require('body-parser')
 const apiRoutes=require('./routes/index')
 const db=require('./models/index');
 const { startOutboxRelay } = require('./utils/outbox-relay');
+const { startBookingSweeper } = require('./utils/booking-sweeper');
+const BOOKING_HOLD_TTL_MINUTES = Number(process.env.BOOKING_HOLD_TTL_MINUTES) || 15;
 const setUpAndStartServer=async ()=>{
 const app= express();
 app.use(bodyParser.json());
@@ -20,6 +22,8 @@ app.listen(PORT,async ()=>{
     }
     // Background relay that reliably publishes outbox events (JOURNAL 1.4)
     startOutboxRelay(5000);
+    // Background sweeper that reclaims orphaned InProcess holds (JOURNAL 1.5)
+    startBookingSweeper(BOOKING_HOLD_TTL_MINUTES, 60000);
   })
 }
 setUpAndStartServer()

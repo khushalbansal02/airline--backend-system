@@ -45,6 +45,13 @@ module.exports = (sequelize, DataTypes) => {
       allowNull:true,
       unique:true,
     },
+    // True once seats are reserved remotely; lets the sweeper know whether an
+    // expired InProcess hold needs its seats released (JOURNAL 1.5).
+    seatsReserved:{
+      type:DataTypes.BOOLEAN,
+      allowNull:false,
+      defaultValue:false,
+    },
   }, {
     sequelize,
     modelName: 'Booking',

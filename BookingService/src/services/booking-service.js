@@ -98,6 +98,9 @@ class BookingService {
       if (reserveRes.status === 409) {
         throw new AppError('Insufficient seats available', 409);
       }
+      // Mark that this booking now holds real seats, so the sweeper knows to
+      // release them if this booking is later orphaned mid-saga (JOURNAL 1.5).
+      await this.bookingRepository.updateBooking(booking.id, { seatsReserved: true });
       compensations.push(() =>
         axios.post(`${FLIGHT_SERVICE_PATH}/api/v1/flights/${data.flightId}/seats/release`, { seats })
       );

@@ -1,4 +1,5 @@
 const {Booking}= require('../models/index');
+const {Op}= require('sequelize');
 
 
 class BookingRepository{
@@ -33,8 +34,11 @@ async updateBooking(bookingId, data, options = {}){
     if (!booking) {
       throw new Error(`Booking ${bookingId} not found`);
     }
-    if (data.status) {
+    if (data.status !== undefined) {
       booking.status = data.status;
+    }
+    if (data.seatsReserved !== undefined) {
+      booking.seatsReserved = data.seatsReserved;
     }
     // Must await the save AND participate in the caller's transaction if one
     // was passed, otherwise this write escapes the transaction boundary.
@@ -44,6 +48,21 @@ async updateBooking(bookingId, data, options = {}){
     // Re-throw instead of swallowing: the service layer decides what to do
     // (rollback the transaction). Silent catches hide real failures (JOURNAL 0.3).
     console.log("something went wrong at the booking repository layer");
+    throw error;
+  }
+}
+
+// Find orphaned holds: bookings still InProcess past the hold TTL (JOURNAL 1.5).
+async findExpiredHolds(cutoff){
+  try {
+    return await Booking.findAll({
+      where: {
+        status: 'InProcess',
+        createdAt: { [Op.lt]: cutoff },
+      },
+    });
+  } catch (error) {
+    console.log("something went wrong finding expired holds");
     throw error;
   }
 }
