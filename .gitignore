@@ -1,6 +1,8 @@
 node_modules/
 .env
 config.json
-node_modules/
-.env
-config.json
+
+# Private study / interview-prep material — LOCAL ONLY, never pushed
+study/
+docs/STUDY_GUIDE.md
+docs/INTERVIEW_CHEATSHEET.md
