@@ -6,9 +6,11 @@ const { sequelize } = require('../models');
 const AppError = require('../utils/app-error');
 
 class BookingService {
-  constructor() {
-    this.bookingRepository = new BookingRepository();
-    this.outboxRepository = new OutboxRepository();
+  // Dependencies are injectable so the saga can be unit-tested with mocks
+  // (no DB / broker needed). Defaults preserve the normal runtime wiring.
+  constructor({ bookingRepository, outboxRepository } = {}) {
+    this.bookingRepository = bookingRepository || new BookingRepository();
+    this.outboxRepository = outboxRepository || new OutboxRepository();
   }
 
   /**

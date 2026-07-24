@@ -314,4 +314,34 @@ Booking #12 → status=Cancelled, seatsReserved=0
 
 > *"I took a naive booking flow and made it correct under concurrency and partial failure: atomic seat reservation (no overselling, load-tested), a Saga with compensating transactions to replace an impossible cross-service ACID transaction, idempotency keys for safe retries, the Transactional Outbox so events survive crashes, and an auto-expiry sweeper that reclaims orphaned holds. Together these give at-least-once delivery with idempotent, self-healing, eventually-consistent processing."*
 
-*Tiers 2–3 (tests, CI, observability, resilience, and the X-factor) are appended as we build them.*
+# Tier 2 — Engineering Rigor (the SDE1 gate)
+
+> Tier 1 proved you can solve hard problems. Tier 2 proves you build like a professional: tested, automated, observable, resilient. "No tests" alone caps a project below the SDE1 bar at most companies — this tier closes that.
+
+## Challenge 2.1 — No automated tests (Testing + CI)
+
+**Symptom.** The README advertised "Jest, Supertest" but there was **not a single test** in the codebase, and no CI. Every change was verified by hand, if at all — which doesn't scale and doesn't survive a code review.
+
+**Why it matters.** Tests are how you make change *safe*. Without them, every refactor is a gamble and reviewers can't trust your PR. A green CI badge is often a literal checkbox in hiring screens. More deeply: writing tests *forces better design* — code that's hard to test is usually too tightly coupled (which is why we added dependency injection to the saga).
+
+**The concept — The test pyramid & designing for testability.**
+- **Unit tests** (many, fast, isolated): test one function/class with its dependencies mocked. Milliseconds each; run on every save and in CI with no infrastructure.
+- **Integration tests** (fewer): test real collaboration — e.g. hitting a real DB or the reserve endpoint end-to-end.
+- **E2E tests** (fewest): the whole system through the front door.
+- **Testability is a design property.** Our saga takes its repositories via the constructor (dependency injection), so tests inject fakes instead of a real DB/broker. We mock `axios` and `sequelize.transaction`, so the *saga logic* is tested without any I/O.
+
+**What we built:**
+- **BookingService** (`test/booking-service.test.js`): 5 unit tests covering the saga — happy path (reserve → confirm → outbox), 409 insufficient-seats + compensation, idempotent replay, failure-after-reserve unwinding compensations in reverse, and input validation.
+- **FlightsAndSearchService** (`test/flight-repository.test.js`): 4 unit tests for atomic reservation — reserves on 1 affected row, rejects on 0 (insufficient/lost race), validates seat counts, releases seats.
+- **CI** (`.github/workflows/ci.yml`): GitHub Actions runs both suites on every push and PR, as a matrix across services. Because everything is mocked, CI needs no MySQL/RabbitMQ — fast and deterministic.
+
+**Proof:** `npm test` → 9 tests green in < 0.5s per service.
+
+**Interview drill.**
+- *Q: What's the test pyramid?* → Many fast isolated unit tests at the base, fewer integration tests, fewest E2E at the top. Optimizes for fast feedback and cheap maintenance.
+- *Q: How did you test a flow that spans a DB and a message broker without them?* → Dependency injection + mocking the I/O boundaries (repositories, axios, transaction). The orchestration logic is pure and testable; the real I/O is covered by a few integration tests.
+- *Q: Unit vs integration — where's the line?* → Unit: no real I/O, everything mocked. Integration: at least one real collaborator (DB, HTTP). Different speed/confidence trade-offs.
+
+---
+
+*Challenges 2.2 (durable queues + DLQ), 2.3 (health checks), 2.4 (structured logging), 2.5 (validation), and Tier 3 are appended as we build them.*

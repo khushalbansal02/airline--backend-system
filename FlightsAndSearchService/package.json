@@ -4,7 +4,8 @@
   "description": "Micro service for handling FLIGHT CRUD",
   "main": "index.js",
   "scripts": {
-    "start": "npx nodemon src/index"
+    "start": "npx nodemon src/index",
+    "test": "jest"
   },
   "author": "",
   "license": "ISC",
@@ -16,5 +17,8 @@
     "nodemon": "^2.0.20",
     "sequelize": "^6.27.0",
     "sequelize-cli": "^6.5.2"
+  },
+  "devDependencies": {
+    "jest": "^30.4.2"
   }
 }
